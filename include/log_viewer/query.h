@@ -2,19 +2,18 @@
 #define LOG_VIEWER_QUERY_H
 
 #include <regex.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "log_viewer/text.h"
 #include "log_viewer/json_support.h"
 
-#define QUERY_CAPACITY 512
+constexpr int QUERY_CAPACITY = 512;
 
 typedef enum { QUERY_TEXT, QUERY_REGEX, QUERY_JSON } QueryKind;
 
 typedef enum { QUERY_EQUAL, QUERY_NOT_EQUAL, QUERY_CONTAINS, QUERY_GREATER, QUERY_GREATER_EQUAL, QUERY_LESS, QUERY_LESS_EQUAL } QueryOperator;
 
-#define QUERY_MAX_TERMS 32
+constexpr int QUERY_MAX_TERMS = 32;
 
 typedef struct {
   size_t offset, length;

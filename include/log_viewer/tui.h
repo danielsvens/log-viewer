@@ -2,7 +2,6 @@
 #define LOG_VIEWER_TUI_H
 
 #include <ncurses.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include "log_viewer/search.h"

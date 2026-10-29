@@ -1,0 +1,21 @@
+j/k or arrows  Move selection
+gg / G         First / last log
+Ctrl-d/u       Half page down / up
+f              Toggle live follow
+h/l            Horizontal scroll
+/              Edit live filter
+Enter          Inspect selected record
+Esc            Cancel filter / close detail
+c              Clear filter
+q              Quit / close detail
+
+Filters (case-insensitive text or regex):
+connection refused
+~error|warn
+
+JSON field queries (case-sensitive values):
+json | level == "error"
+json | http.status >= 500
+json | message contains "timeout"
+
+All indexed history retained; streams use temporary disk storage.

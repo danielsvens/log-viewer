@@ -2,7 +2,6 @@
 #define LOG_VIEWER_TEXT_H
 
 #include <stddef.h>
-#include <stdbool.h>
 
 typedef struct {
   char *data;

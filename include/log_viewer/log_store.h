@@ -1,10 +1,10 @@
 #ifndef LOG_VIEWER_LOG_STORE_H
 #define LOG_VIEWER_LOG_STORE_H
-#include <stdbool.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
-#define INDEX_PAGE_RECORDS 65536
+constexpr size_t INDEX_PAGE_RECORDS = 65536;
 
 /* Exactly 16 bytes per indexed line, independent of text size. */
 typedef struct {
@@ -52,4 +52,5 @@ bool log_store_location(const LogStore *store, size_t id, RecordLocation *locati
 /* 1 = read; 0 = source changed/unavailable; -1 = IO/allocation error. */
 int record_reader_get(RecordReader *reader, RecordLocation location, const char **text);
 void record_reader_destroy(RecordReader *reader);
+
 #endif

@@ -15,6 +15,15 @@ def run(data, query=''):
     return subprocess.run([BIN, '--dump', '--filter', query], input=data,
                           text=True, capture_output=True)
 
+# Resources are compiled into the binary, with an explicit C-string terminator.
+with open('resources/usage.txt', 'rb') as resource:
+    expected_usage = resource.read() + b'\n'
+with tempfile.TemporaryDirectory() as directory:
+    result = subprocess.run([BIN, '--help'], cwd=directory, capture_output=True)
+    assert result.returncode == 0 and result.stdout == expected_usage
+    assert b'\0' not in result.stdout
+
+
 records = '{"level":"error","http":{"status":503},"message":"timeout"}\n{"level":"info","http":{"status":200}}\nplain warning\n'
 for query, expected in [('', 3), ('ERROR', 1), ('~error|warning', 2),
                         ('json | level == "error"', 1),
@@ -84,6 +93,9 @@ with tempfile.TemporaryDirectory() as directory:
         f.write(records)
     t = Terminal([path])
     assert b'LOG VIEWER' in t.read()
+    help_screen = t.key(b'?')
+    assert b'Keys & queries' in help_screen and b'Move selection' in help_screen
+    t.key(b'q')
     t.key(b'gg')
     screen = t.key(b'\r')
     assert b'Log detail' in screen and b'503' in screen, screen

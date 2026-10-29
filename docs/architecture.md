@@ -15,6 +15,11 @@ retention with file-backed line indexing and moves ingestion/search to one worke
 | `text.c` | Reusable normalization and existing severity coloring heuristic |
 | `tui.c`, `tui_input.c`, `tui_render.c` | Terminal lifetime, keys, visible rows, modal |
 
+Human-readable help, usage, and key hints live in `resources/*.txt` and are
+embedded as NUL-terminated byte arrays with C23 `#embed`. They have no runtime
+filesystem dependency. Numeric compile-time limits use typed `constexpr` values;
+header guards and platform feature flags remain preprocessor macros.
+
 Interfaces live under `include/log_viewer/`. Only `json_support.c` includes the
 third-party parser implementation. Core modules have no ncurses dependency.
 
@@ -109,6 +114,9 @@ introduced. The mutable process-global state is only the signal interruption fla
 Continue **check → gather → transform → aggregate → return**, using only applicable
 stages. Check failures early; gather metadata/inputs; transform with small helpers;
 commit state/results together; release temporary ownership and return a status.
+Use one blank line between changes of purpose, including within branches and
+loops. Separate allocation/lookup, its guard, successful work, and the final
+return. Keep related state updates together and declarations close to their use.
 Do not add empty stages or repetitive five-label comments to small functions.
 Resource acquisition checks each operation before using its result.
 

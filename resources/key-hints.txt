@@ -1,0 +1,1 @@
+j/k move  gg/G ends  f follow  / filter  Enter detail  h/l pan  ? help  q quit

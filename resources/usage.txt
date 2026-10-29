@@ -1,0 +1,3 @@
+Usage: log-viewer [--filter QUERY] [--dump] [FILE|-]
+Pipe logs or follow a file. / filters, Enter details, ? help, q quit.
+--dump prints matching lines without the TUI (until EOF).

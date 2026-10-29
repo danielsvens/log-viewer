@@ -5,7 +5,8 @@ coloring, and a scrollable JSON detail modal. Inspired by LazyTail.
 
 ## Build and run
 
-Requires a C23 compiler, make, POSIX threads, and ncursesw development files.
+Requires a compiler implementing C23 `constexpr`, `nullptr`, and `#embed`,
+make, POSIX threads, and ncursesw development files. Verified with GCC 16.
 
 ```sh
 make MODE=release
@@ -106,6 +107,18 @@ See [architecture](docs/architecture.md) for ownership/concurrency and
 [measured results](docs/performance.md) for the 1M/10M benchmark and tradeoffs.
 Sheredom’s bundled [JSON header](include/json.h) is under the Unlicense;
 application source is MIT licensed.
+
+## Embedded text and code style
+
+Help, CLI usage, and the key hint live in `resources/*.txt`. C23 `#embed` places
+these bytes in the executable with a terminating NUL; no runtime resource files
+or generated C files are needed. GCC records embedded inputs in the normal
+header dependency files, so editing a text file rebuilds its consumer.
+
+First-party C uses typed `constexpr` constants, `nullptr`, and semantic blank-line
+grouping following check → gather → transform → aggregate → return where applicable.
+The formatter handles layout; logical grouping is reviewed manually. The bundled
+JSON header retains its upstream style.
 
 ## Development and verification
 

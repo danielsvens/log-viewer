@@ -1,8 +1,6 @@
 #ifndef LOG_VIEWER_OPTIONS_H
 #define LOG_VIEWER_OPTIONS_H
 
-#include <stdbool.h>
-
 typedef struct {
   const char *path;
   const char *filter;
