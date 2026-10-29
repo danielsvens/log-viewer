@@ -1,0 +1,9 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(src|include)/'
+FormatStyle: none
+UseColor: true
