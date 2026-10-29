@@ -127,3 +127,29 @@ with tempfile.TemporaryDirectory() as directory:
     assert proc.returncode == 0
     os.close(master)
 print('All filtering, JSON, live file, rotation, modal, and pipe tests passed.')
+
+# Giant records cross ingestion/read windows; no 1 MiB truncation is allowed.
+long_record = 'a' * (1024 * 1024 - 3) + 'error timeout' + 'b' * (1024 * 1024) + ' payment'
+result = run(long_record, 'error AND timeout AND payment')
+assert result.returncode == 0 and result.stdout == long_record + '\n'
+assert run('', 'error AND timeout').stdout == ''
+assert run('error timeout payment\nerror payment\n', 'error AND timeout AND payment').stdout == 'error timeout payment\n'
+# ANSI CSI and a search term can each span a streaming search chunk boundary.
+long_ansi = 'x' * (1024 * 1024 - 1) + '\x1b[31merror\x1b[0m' + 'y' * (1024 * 1024) + ' timeout payment'
+result = run(long_ansi, 'error AND timeout AND payment')
+assert result.returncode == 0 and 'error' in result.stdout and '\x1b' not in result.stdout
+print('Long-record, window-boundary, empty-input, and AND regression tests passed.')
+
+
+# Redirected regular stdin respects and advances its shared file position.
+with tempfile.TemporaryFile() as file:
+    file.write(b'skip\nkeep\n')
+    file.seek(5)
+    result = subprocess.run([BIN, '--dump'], stdin=file, capture_output=True)
+    assert result.returncode == 0 and result.stdout == b'keep\n'
+    assert file.tell() == 10
+
+assert run('foo\n foo \n', ' foo ').stdout == ' foo \n'
+assert run('aaa\nbbb\n', '~^bbb$').stdout == 'bbb\n'
+
+assert run('data\n', 'x' * 512).returncode == 2

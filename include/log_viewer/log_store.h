@@ -1,33 +1,55 @@
 #ifndef LOG_VIEWER_LOG_STORE_H
 #define LOG_VIEWER_LOG_STORE_H
-
 #include <stdbool.h>
 #include <stddef.h>
-#include "log_viewer/query.h"
+#include <stdint.h>
 
-#define LOG_STORE_CAPACITY 100000
+#define INDEX_PAGE_RECORDS 65536
+
+/* Exactly 16 bytes per indexed line, independent of text size. */
+typedef struct {
+  uint64_t offset, length;
+} LineIndex;
+
+typedef struct {
+  int fd;
+  size_t first;
+  bool available;
+} FileSegment;
+
+typedef struct {
+  LineIndex **pages;
+  size_t page_count, page_capacity, count;
+  FileSegment *segments;
+  size_t segment_count, segment_capacity, unavailable;
+} LogStore;
+
+typedef struct {
+  int fd;
+  uint64_t offset, length;
+  bool available;
+} RecordLocation;
 
 typedef struct {
   char *text;
-  unsigned long id;
+  uint64_t id;
 } LogRecord;
 
 typedef struct {
-  LogRecord *records;
-  size_t *visible;
-  size_t count, matches, selected;
-  unsigned long sequence;
-  bool follow;
-} LogStore;
+  char *data;
+  size_t capacity, length;
+  int fd;
+  uint64_t offset;
+} RecordReader;
 
-bool log_store_init(LogStore *store);
+void log_store_init(LogStore *store);
 void log_store_destroy(LogStore *store);
-/* Takes ownership of text. Store must have been initialized successfully. */
-void log_store_append(LogStore *store, const Query *query, char *text);
-void log_store_refilter(LogStore *store, const Query *query);
-const LogRecord *log_store_selected(const LogStore *store);
-void log_store_move(LogStore *store, long delta);
-void log_store_set_follow(LogStore *store, bool follow);
-void log_store_first(LogStore *store);
-
+bool log_store_add_file(LogStore *store, int fd, size_t *segment);
+void log_store_invalidate(LogStore *store, size_t segment);
+bool log_store_append(LogStore *store, uint64_t offset, uint64_t length);
+void log_store_pop_tail(LogStore *store);
+bool log_store_location(const LogStore *store, size_t id, RecordLocation *location);
+/* 1 = read; 0 = source changed/unavailable; -1 = IO/allocation error. */
+int record_reader_get(RecordReader *reader, RecordLocation location, const char **text);
+void record_reader_destroy(RecordReader *reader);
 #endif

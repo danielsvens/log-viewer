@@ -3,6 +3,7 @@
 #include "log_viewer/text.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,63 +52,192 @@ static bool compile_json_query(Query *query) {
   return true;
 }
 
+static bool prepare_terms(Query *query);
+
 bool query_compile(Query *query, const char *text) {
   /* Gather before resetting so callers may recompile query->text itself. */
   char expression[QUERY_CAPACITY];
+  bool too_long = strlen(text) >= sizeof(expression);
   snprintf(expression, sizeof(expression), "%s", text);
   query_destroy(query);
   *query = (Query){ 0 };
   memcpy(query->text, expression, strlen(expression) + 1);
+  if (too_long) {
+    snprintf(query->error, sizeof(query->error), "Query exceeds %d bytes", QUERY_CAPACITY - 1);
+    return false;
+  }
+  errno = 0;
 
   if (*expression == '~') {
     query->kind = QUERY_REGEX;
     int result = regcomp(&query->regex, expression + 1, REG_EXTENDED | REG_ICASE | REG_NOSUB);
     query->compiled = result == 0;
+    query->allocation_failed = result == REG_ESPACE;
     if (result) regerror(result, &query->regex, query->error, sizeof(query->error));
   } else if (!strncmp(expression, "json |", 6)) {
     query->kind = QUERY_JSON;
     if (!compile_json_query(query)) {
+      query->allocation_failed = errno == ENOMEM;
       snprintf(query->error, sizeof(query->error), "Expected: json | field == \"value\" (== != > >= < <= contains)");
     }
+  }
+  if (query->kind == QUERY_TEXT && !prepare_terms(query)) snprintf(query->error, sizeof(query->error), "Expected nonempty AND terms (max %d)", QUERY_MAX_TERMS);
+  if (query->kind == QUERY_JSON) {
+    char *end;
+    query->numeric_value = strtod(query->value, &end);
+    query->numeric_valid = end != query->value && !*end;
   }
   return !*query->error;
 }
 
-static bool compare_field(const Query *query, const JsonField *field) {
-  if (query->operator == QUERY_EQUAL) return !strcmp(field->text, query->value);
-  if (query->operator == QUERY_NOT_EQUAL) return strcmp(field->text, query->value) != 0;
-  if (query->operator == QUERY_CONTAINS) return strstr(field->text, query->value) != NULL;
-  if (!field->number) return false;
+static unsigned char folded(unsigned char byte) { return byte >= 'A' && byte <= 'Z' ? (unsigned char)(byte + ('a' - 'A')) : byte; }
 
-  char *field_end, *query_end;
-  double actual = strtod(field->text, &field_end);
-  double expected = strtod(query->value, &query_end);
-  if (field_end == field->text || *field_end || query_end == query->value || *query_end) return false;
+static bool prepare_terms(Query *query) {
+  snprintf(query->terms_text, sizeof(query->terms_text), "%s", query->text);
+  bool conjunction = strstr(query->text, " AND ") != NULL;
+  char *part = query->terms_text;
+  for (;;) {
+    char *end = strstr(part, " AND ");
+    if (end) *end = 0;
+    char *term = conjunction ? text_trim(part) : part;
+    if (!*term && end) return false;
+    if (*term) {
+      if (query->term_count == QUERY_MAX_TERMS) return false;
+      QueryTerm *prepared = &query->terms[query->term_count++];
+      prepared->offset = (size_t)(term - query->terms_text);
+      prepared->length = strlen(term);
+      for (size_t i = 0; i < 256; i++) prepared->skip[i] = (uint16_t)prepared->length;
+      for (size_t i = 0; i + 1 < prepared->length; i++) prepared->skip[folded((unsigned char)term[i])] = (uint16_t)(prepared->length - i - 1);
+    } else if (query->term_count) return false;
+    if (!end) break;
+    part = end + 5;
+  }
+  return true;
+}
 
+static bool contains_term(const char *text, size_t length, const char *needle, const QueryTerm *term) {
+  size_t size = term->length;
+  if (size > length) return false;
+  size_t offset = 0;
+  while (offset <= length - size) {
+    size_t i = size;
+    while (i && folded((unsigned char)text[offset + i - 1]) == folded((unsigned char)needle[i - 1])) i--;
+    if (!i) return true;
+    offset += term->skip[folded((unsigned char)text[offset + size - 1])];
+  }
+  return false;
+}
+
+QueryResult query_match_text_chunk(const Query *query, const char *text, size_t length, QueryStream *stream, QueryScratch *scratch) {
+  if (!text_buffer_reserve(&scratch->normalized, length + QUERY_CAPACITY + 1)) return QUERY_FAILURE;
+  char *normalized = scratch->normalized.data;
+  size_t written = stream->carry_length;
+  memcpy(normalized, stream->carry, written);
+  for (size_t i = 0; i < length; i++) {
+    unsigned char byte = (unsigned char)text[i];
+    if (stream->csi) {
+      if (byte >= '@' && byte <= '~') stream->csi = false;
+      continue;
+    }
+    if (stream->escape) {
+      stream->escape = false;
+      if (byte == '[') {
+        stream->csi = true;
+        continue;
+      }
+    }
+    if (byte == 27) {
+      stream->escape = true;
+      continue;
+    }
+    if (byte == '\t') normalized[written++] = ' ';
+    else if (byte >= 32 && byte != 127) normalized[written++] = (char)byte;
+  }
+  size_t longest = 0;
+  bool all = true;
+  for (size_t i = 0; i < query->term_count; i++) {
+    const QueryTerm *term = &query->terms[i];
+    if (term->length > longest) longest = term->length;
+    if (!stream->found[i]) stream->found[i] = contains_term(normalized, written, query->terms_text + term->offset, term);
+    all = all && stream->found[i];
+  }
+  stream->carry_length = longest && written >= longest ? longest - 1 : written;
+  memcpy(stream->carry, normalized + written - stream->carry_length, stream->carry_length);
+  return all ? QUERY_MATCH : QUERY_NO_MATCH;
+}
+
+static bool compare_field(const Query *query, const JsonFieldSpan *field) {
+  size_t length = strlen(query->value);
+  bool equal = field->length == length && !memcmp(field->text, query->value, length);
+  if (query->operator == QUERY_EQUAL) return equal;
+  if (query->operator == QUERY_NOT_EQUAL) return !equal;
+  if (query->operator == QUERY_CONTAINS) return memmem(field->text, field->length, query->value, length) != NULL;
+  if (!field->number || !query->numeric_valid) return false;
+  char *end;
+  double actual = strtod(field->text, &end);
+  if ((size_t)(end - field->text) != field->length) return false;
   switch (query->operator) {
   case QUERY_GREATER:
-    return actual > expected;
+    return actual > query->numeric_value;
   case QUERY_GREATER_EQUAL:
-    return actual >= expected;
+    return actual >= query->numeric_value;
   case QUERY_LESS:
-    return actual < expected;
+    return actual < query->numeric_value;
   case QUERY_LESS_EQUAL:
-    return actual <= expected;
+    return actual <= query->numeric_value;
   default:
     return false;
   }
 }
 
-bool query_matches(const Query *query, const char *text) {
-  if (*query->error) return false;
-  if (query->kind == QUERY_TEXT) return !*query->text || strcasestr(text, query->text) != NULL;
-  if (query->kind == QUERY_REGEX) return query->compiled && regexec(&query->regex, text, 0, NULL, 0) == 0;
+QueryResult query_match_span(const Query *query, const char *text, size_t length, QueryScratch *scratch) {
+  if (*query->error) return QUERY_NO_MATCH;
+  bool needs_copy = query->kind == QUERY_JSON;
+  for (size_t i = 0; !needs_copy && i < length; i++) {
+    unsigned char byte = (unsigned char)text[i];
+    if (byte < 32 || byte == 127) needs_copy = true;
+  }
+  if (needs_copy) {
+    if (!text_buffer_sanitize(&scratch->normalized, text, length)) return QUERY_FAILURE;
+    text = scratch->normalized.data;
+    length = scratch->normalized.length;
+  }
+  if (query->kind == QUERY_TEXT) {
+    for (size_t i = 0; i < query->term_count; i++) {
+      const QueryTerm *term = &query->terms[i];
+      if (!contains_term(text, length, query->terms_text + term->offset, term)) return QUERY_NO_MATCH;
+    }
+    return QUERY_MATCH;
+  }
+  if (query->kind == QUERY_REGEX) {
+    if (length > INT32_MAX) {
+      errno = EOVERFLOW;
+      return QUERY_FAILURE;
+    }
+    regmatch_t range = { .rm_so = 0, .rm_eo = (regoff_t)length };
+    int result = regexec(&query->regex, text, 1, &range, REG_STARTEND);
+    if (result != 0 && result != REG_NOMATCH) {
+      errno = result == REG_ESPACE ? ENOMEM : EINVAL;
+      return QUERY_FAILURE;
+    }
+    return result == 0 ? QUERY_MATCH : QUERY_NO_MATCH;
+  }
+  JsonFieldSpan field;
+  JsonFieldResult found = json_read_field_reuse(text, length, query->field, &scratch->json, &field);
+  if (found == JSON_FIELD_ERROR) return QUERY_FAILURE;
+  return found == JSON_FIELD_FOUND && compare_field(query, &field) ? QUERY_MATCH : QUERY_NO_MATCH;
+}
 
-  JsonField field;
-  if (!json_read_field(text, query->field, &field)) return false;
-  bool matches = compare_field(query, &field);
-  free(field.text);
-  return matches;
+bool query_matches(const Query *query, const char *text) {
+  QueryScratch scratch = { 0 };
+  QueryResult result = query_match_span(query, text, strlen(text), &scratch);
+  query_scratch_destroy(&scratch);
+  return result == QUERY_MATCH;
+}
+
+void query_scratch_destroy(QueryScratch *scratch) {
+  text_buffer_destroy(&scratch->normalized);
+  json_workspace_destroy(&scratch->json);
 }
 
 void query_destroy(Query *query) {

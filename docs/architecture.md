@@ -1,76 +1,127 @@
-# Code structure and function flow
+# Architecture and ownership
 
-`main.c` handles locale setup, command-line results, and the application exit
-code. It delegates resource lifetime and the event loop to `app.c`.
+The entry point and ncurses components are retained. Phase 1 replaces string
+retention with file-backed line indexing and moves ingestion/search to one worker.
 
 | Module | Responsibility |
 | --- | --- |
-| `options.c` | Parse arguments and provide usage text |
-| `app.c` | Initialize modules, connect incoming records to their consumer, run the loop, clean up |
-| `source.c` | Read bounded batches, assemble records, follow file rotation/truncation, restore stdin flags |
-| `log_store.c` | Own retained records, build visible indices, preserve selection, evict old records |
-| `query.c` | Compile text/regex/JSON filters and evaluate record matches |
-| `json_support.c` | Bound parsing, decode strings, extract nested fields, pretty-print messages |
-| `text.c` | Copy/trim/sanitize text and apply the existing severity heuristic |
-| `tui.c` | Initialize and close the terminal |
-| `tui_input.c` | Dispatch navigation, filter editing, and modal keys |
-| `tui_render.c` | Draw the viewport, highlighted text, status, and modal |
+| `main.c`, `options.c` | Locale, arguments, usage, exit status |
+| `app.c` | Start the engine, run the TUI or dump consumer, clean up |
+| `source.c` | Read bounded batches, index line boundaries, spool streams, follow files |
+| `log_store.c` | Own descriptors and paged 16-byte line metadata; buffered random access |
+| `search.c` | Worker, query cancellation, ordered result IDs, snapshots, navigation |
+| `query.c` | Prepared AND/text, regex, numeric/JSON comparisons, reusable query scratch |
+| `json_support.c` | Parser limits, reusable parser workspace, nested field lookup, pretty printing |
+| `text.c` | Reusable normalization and existing severity coloring heuristic |
+| `tui.c`, `tui_input.c`, `tui_render.c` | Terminal lifetime, keys, visible rows, modal |
 
-Public interfaces live under `include/log_viewer/`. The upstream `include/json.h`
-implementation is included only by `json_support.c`; other modules use the
-small application interface. The core modules do not depend on ncurses.
+Interfaces live under `include/log_viewer/`. Only `json_support.c` includes the
+third-party parser implementation. Core modules have no ncurses dependency.
+
+## Storage
+
+`LineIndex` is statically asserted to be 16 bytes: two 64-bit values for raw file
+offset and length (excluding the newline). Fixed-size metadata pages avoid a
+large moving allocation during indexing. There is no per-line string allocation,
+fixed record cap, or history eviction. Empty records and a final unterminated
+record are indexed. A provisional final record is replaced/extended when input
+grows; results from that record onward are reevaluated.
+
+A small segment list maps record ranges to owned descriptors. Regular files are
+read directly; rotation retains the old descriptor and creates a new segment.
+Non-regular input is appended to an unlinked `mkstemp` file under `TMPDIR` (or
+`/tmp`), using the same line index. Disk/full filesystem and IO failures are
+reported rather than discarding history.
+
+`mmap` was considered. A live external truncate can invalidate mapped pages
+between a size check and access; unmapping on the next poll does not prevent
+`SIGBUS`. Phase 1 therefore uses buffered `pread`, which also gives safe random
+access and avoids copying whole files into application-owned memory. There are
+no mapping lifetimes to synchronize. The measured throughput is sufficient for
+the milestone without introducing snapshots, a cache manager, or a signal trap.
+
+A detected truncate invalidates that generation, retains its record IDs as
+unavailable, and starts a new segment. Unfiltered browsing shows placeholders
+and an affected-record count; filtered searches skip unavailable generations.
+Externally removed bytes cannot be reconstructed. Append/rename are the expected
+writer patterns; in-place rewrites, or a truncate/regrow entirely between polls,
+are not transactional snapshots. `pread` remains memory-safe even in those races.
+
+## Search and synchronization
+
+`Search` owns a worker thread, the source, metadata, and result pages. The worker
+alternates 1 MiB ingestion batches with scans of up to 8,192 records. Queries
+are prepared once per revision. Text uses bounded case-folded substring matching
+with precomputed skip tables; AND conditions short-circuit. Large text records
+are processed in chunks with normalized carry bytes so terms and ANSI sequences
+can span boundaries. JSON/regex work is not done for text-only queries.
+
+JSON uses the bundled parser's allocation callback to reuse one workspace.
+Scalar field values are borrowed from that workspace, then compared before the
+next parse. Numeric query operands are converted once. Object/array field
+serialization can still allocate, as can a workspace growth operation. Invalid
+JSON and allocation failures are distinguished in the scan path.
+
+A single mutex protects source/index mutations, result publication, request text,
+and snapshot/location lookup. Expensive filter evaluation happens outside that
+mutex. Only the worker mutates metadata and result pages. The TUI copies record
+locations while locked, then releases the lock before its own IO/formatting.
+Descriptors live until shutdown, so copied locations cannot refer to a closed
+file. Separate readers and scratch buffers prevent shared mutable text buffers.
+Ingestion holds the lock for a bounded batch, including its read; slow storage
+can increase that lock latency. There is no hard real-time latency guarantee.
+
+Atomic query revisions and a stop flag are checked between records and between
+chunks of a giant text record. New requests hide old results immediately. Only a
+batch from the current revision may be published. Results are ascending compact
+record IDs; publication reuses pages instead of holding duplicate full result
+sets. The empty filter uses implicit IDs. Completed-query result capacity is
+retained for subsequent searches and freed on shutdown.
+
+`LogView` belongs to the UI thread and contains counts, selection/follow state,
+and a stable record-ID anchor. Selection uses direct result lookup and binary
+search, including across widely separated matches. Regex/JSON library calls
+within one record are not forcibly interrupted, but do not hold the UI mutex.
+
+## Resource lifetimes
+
+- `app_run()` owns the UI query, `Search`, and `Tui`; it tears down the terminal
+  before printing runtime errors.
+- `Search` stops/signals and joins its worker before freeing pages, buffers,
+  queries, workspaces, or descriptors. Main code must stop reading before close.
+- `LogSource` owns its input descriptor when opened from a path, borrows stdin,
+  and restores stdin flags. It owns a reusable read buffer and stream spool
+  descriptor. `LogStore` owns separate descriptor references for history.
+- `RecordReader` owns its reusable byte buffer. Returned spans are borrowed
+  until its next refill/destruction. Location lookup never returns index pointers.
+- `QueryScratch` owns normalization and parser buffers; it is local to one
+  consumer. Query compilation owns any compiled regex and replaces it safely.
+- `Tui` owns its reader, normalized row buffer, terminal, and formatted modal
+  string. Rows preview at most 64 KiB; a modal reads only the selected full record.
+- Error paths clean up partially initialized state. Application-owned allocation
+  balance and deterministic failure paths are verified by test-only linker wrappers.
+
+No runtime arena, allocator, database, inverted index, or custom text cache was
+introduced. The mutable process-global state is only the signal interruption flag.
 
 ## Function guideline
 
-Use the flow **check → gather → transform → aggregate → return** where those
-stages apply:
+Continue **check → gather → transform → aggregate → return**, using only applicable
+stages. Check failures early; gather metadata/inputs; transform with small helpers;
+commit state/results together; release temporary ownership and return a status.
+Do not add empty stages or repetitive five-label comments to small functions.
+Resource acquisition checks each operation before using its result.
 
-1. **Check:** Reject invalid input, failed operations, or unmet preconditions
-   early. Internal initialized-state contracts use assertions.
-2. **Gather:** Read the inputs needed for the operation into local variables.
-3. **Transform:** Parse, format, compare, or compute using focused helpers.
-4. **Aggregate:** Commit the result to the owning state or collect results.
-5. **Return:** Release temporary resources and return the result or status.
-
-Do not add empty stages or five repetitive comments to small functions. Split
-unrelated work into named helpers, and keep dispatch functions concerned with
-routing actions. Resource acquisition necessarily checks each operation before
-using its result.
-
-For example, `query_matches()` checks query validity, gathers a JSON field,
-compares it, releases the temporary field, and returns the match result.
-`log_store_append()` checks its initialized-state contract, gathers the next
-record and its match result, then commits record storage, visible indices,
-and follow selection together.
-
-## State and ownership
-
-- `Application` owns the query, source, store, and TUI. Cleanup handles partially
-  initialized state. The only mutable module-global state is the
-  `sig_atomic_t` interruption flag used by signal handlers.
-- `LogSource` owns its partial-line buffer and file descriptor, borrowing the
-  command-line path. It borrows stdin and restores its flags rather than closing
-  it. Call `source_open()` before `source_close()`; close is safe after a failed
-  open and can be repeated.
-- A `RecordSink` takes ownership of every emitted string, even on failure.
-  The app transfers it to the store or frees it after dump output.
-- `LogStore` owns retained strings and the record/index allocations. Selected
-  record pointers are borrowed and expire on eviction or destruction.
-- `Query` is initially zeroed and owns a compiled regex when present. Compilation
-  replaces its previous expression, including when the replacement is invalid.
-- JSON helpers return owned strings, while the third-party parse tree stays
-  private to the JSON module and is released before each helper returns.
-- `Tui` owns the terminal and modal text. Navigation, editing, and rendering all
-  receive explicit state rather than accessing hidden application globals.
+For example, `search_read_result()` checks a result index, gathers a location under
+the mutex, reads and normalizes outside the lock, then returns a borrowed display
+record. `query_match_span()` validates query state, normalizes only when required,
+evaluates prepared conditions, and returns match/no-match/error explicitly.
 
 ## Verification
 
-`make test` runs a core test binary without ncurses, followed by pseudo-terminal
-integration tests. Core tests exercise independent query state, decoded JSON,
-record ownership, selection through filtering/eviction, and partial-line
-flushing. Integration tests cover live file append, rotation, truncation, modal
-rendering, filter cancellation, and pipeline keyboard routing.
-
-To reuse the integration suite with another build, set `LOG_VIEWER_BIN` to its
-path. `make format-check`, `make tidy`, and `make MODE=release test` provide the
-formatting, static-analysis, and release checks.
+`make test` exercises >100k file and pipe history, AND/JSON/regex semantics,
+supersession, shutdown during work, stable selection, partial-line extension,
+truncation, >4 GiB offsets, and existing terminal workflows. `make sanitize`,
+`make threadcheck`, and `make memcheck` cover memory safety, concurrency, and
+allocation balance/failure cleanup. See [performance](performance.md) for the
+separate reproducible 1M/10M measurements and acceptance evidence.

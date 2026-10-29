@@ -1,114 +1,104 @@
 #include "log_viewer/app.h"
-#include "log_viewer/log_store.h"
 #include "log_viewer/query.h"
-#include "log_viewer/source.h"
+#include "log_viewer/search.h"
 #include "log_viewer/tui.h"
-
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-/* Signal handlers only communicate through this async-signal-safe flag. */
 static volatile sig_atomic_t interrupted;
 
-static void handle_signal(int signal_number) {
-  (void)signal_number;
+static void handle_signal(int number) {
+  (void)number;
   interrupted = 1;
 }
 
-typedef struct {
-  const Options *options;
-  Query query;
-  LogSource source;
-  LogStore store;
-  Tui tui;
-  const char *runtime_error;
-} Application;
-
-static bool consume_record(void *context, char *record) {
-  Application *app = context;
-  if (!app->options->dump) {
-    log_store_append(&app->store, &app->query, record);
-    return true;
+static int run_dump(Search *search) {
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  size_t printed = 0;
+  int result = 0;
+  while (!interrupted) {
+    SearchStatus status = search_status(search);
+    if (status.error) {
+      errno = status.error;
+      result = 1;
+      break;
+    }
+    while (printed < status.matches && !interrupted) {
+      LogRecord record;
+      int read = search_read_result(search, printed, &reader, &buffer, &record, 0);
+      if (read < 0 || (read && puts(record.text) == EOF)) {
+        result = 1;
+        break;
+      }
+      if (!read) break;
+      printed++;
+    }
+    if (result || (status.eof && !status.searching && printed == status.matches)) break;
+    usleep(1000);
   }
-
-  bool matches = query_matches(&app->query, record);
-  bool written = !matches || puts(record) != EOF;
-  free(record);
-  return written;
+  if (!result && fflush(stdout) == EOF) result = 1;
+  int error = errno;
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  errno = error;
+  return interrupted ? 130 : result;
 }
 
-static int prepare_application(Application *app) {
-  if (!query_compile(&app->query, app->options->filter)) {
-    fprintf(stderr, "%s\n", app->query.error);
-    return 2;
-  }
-  SourceOpenResult opened = source_open(&app->source, app->options->path);
-  if (opened == SOURCE_INPUT_REQUIRED) {
-    fprintf(stderr, "Provide a log file or pipe: command | log-viewer\n");
-    return 2;
-  }
-  if (opened == SOURCE_OPEN_ERROR) {
-    perror(app->options->path ? app->options->path : "Log input");
-    return 1;
-  }
-  if (app->options->dump) return 0;
-  if (!log_store_init(&app->store)) {
-    perror("Allocating log store");
-    return 1;
-  }
-  if (!tui_open(&app->tui)) {
-    perror("Opening terminal (use --dump for noninteractive output)");
-    return 1;
-  }
-  return 0;
-}
-
-static int run_application(Application *app) {
-  bool dump = app->options->dump;
-  while (!interrupted && (dump || app->tui.running)) {
-    if (!source_poll(&app->source, !dump, consume_record, app)) {
-      app->runtime_error = "Reading logs";
+static int run_tui(Search *search, Query *query, Tui *tui) {
+  LogView view = { .follow = true };
+  while (!interrupted && tui->running) {
+    SearchStatus status = search_status(search);
+    if (status.error) {
+      errno = status.error;
       return 1;
     }
-    if (dump) {
-      if (app->source.eof) break;
-      usleep(20000);
-      continue;
-    }
-    tui_render(&app->tui, &app->store, &app->query, app->source.eof);
-    if (!tui_handle_key(&app->tui, &app->store, &app->query, getch())) {
-      app->runtime_error = "Opening log detail";
+    search_sync_view(search, &view);
+    tui_render(tui, search, &view, query, status.eof);
+    if (tui->io_error) {
+      errno = tui->io_error;
       return 1;
     }
+    if (!tui_handle_key(tui, search, &view, query, getch())) return 1;
   }
   return interrupted ? 130 : 0;
 }
 
-static void destroy_application(Application *app) {
-  tui_close(&app->tui);
-  source_close(&app->source);
-  log_store_destroy(&app->store);
-  query_destroy(&app->query);
-}
-
 int app_run(const Options *options) {
-  Application app = { .options = options, .source = { .fd = -1, .original_flags = -1 } };
-  int result = prepare_application(&app);
-  if (result == 0) {
+  Query query = { 0 };
+  if (!query_compile(&query, options->filter)) {
+    fprintf(stderr, "%s\n", query.error);
+    query_destroy(&query);
+    return query.allocation_failed ? 1 : 2;
+  }
+  Search *search = NULL;
+  Tui tui = { 0 };
+  SourceOpenResult opened = search_open(&search, options->path, options->filter, !options->dump);
+  if (opened != SOURCE_OPENED) {
+    if (opened == SOURCE_INPUT_REQUIRED) fprintf(stderr, "Provide a log file or pipe: command | log-viewer\n");
+    else perror(options->path ? options->path : "Log input");
+    query_destroy(&query);
+    return opened == SOURCE_INPUT_REQUIRED ? 2 : 1;
+  }
+  int result = 0;
+  if (!options->dump && !tui_open(&tui)) result = 1;
+  else {
     interrupted = 0;
     void (*previous_interrupt)(int) = signal(SIGINT, handle_signal);
     void (*previous_terminate)(int) = signal(SIGTERM, handle_signal);
-    result = run_application(&app);
+    result = options->dump ? run_dump(search) : run_tui(search, &query, &tui);
     signal(SIGINT, previous_interrupt);
     signal(SIGTERM, previous_terminate);
   }
   int error = errno;
-  destroy_application(&app);
-  if (app.runtime_error) {
+  tui_close(&tui);
+  search_close(search);
+  query_destroy(&query);
+  if (result == 1) {
     errno = error;
-    perror(app.runtime_error);
+    perror("Log viewer");
   }
   return result;
 }

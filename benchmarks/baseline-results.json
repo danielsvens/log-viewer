@@ -1,0 +1,12 @@
+{
+  "received": 10000000,
+  "retained": 100000,
+  "index_seconds": 1.390993,
+  "rare_query_seconds": 0.004314,
+  "rare_matches": 1,
+  "AND_matches": 0,
+  "peak_rss_kib": 18892,
+  "revision": "b53937f",
+  "dataset": "/tmp/log-viewer-benchmark/10000000.log",
+  "note": "Original retained-history path; rare query searches only the retained window; AND is unsupported."
+}

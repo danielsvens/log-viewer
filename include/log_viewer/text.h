@@ -2,6 +2,16 @@
 #define LOG_VIEWER_TEXT_H
 
 #include <stddef.h>
+#include <stdbool.h>
+
+typedef struct {
+  char *data;
+  size_t length, capacity;
+} TextBuffer;
+
+bool text_buffer_reserve(TextBuffer *buffer, size_t size);
+bool text_buffer_sanitize(TextBuffer *buffer, const char *text, size_t length);
+void text_buffer_destroy(TextBuffer *buffer);
 
 char *text_copy(const char *text);
 char *text_trim(char *text);

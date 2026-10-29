@@ -46,5 +46,7 @@ void tui_close(Tui *tui) {
   }
   if (tui->tty) fclose(tui->tty);
   free(tui->detail);
+  record_reader_destroy(&tui->reader);
+  text_buffer_destroy(&tui->line);
   *tui = (Tui){ 0 };
 }

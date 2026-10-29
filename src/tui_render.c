@@ -2,6 +2,7 @@
 #include "log_viewer/text.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -23,7 +24,7 @@ static const char HELP_TEXT[] = "j/k or arrows  Move selection\n"
                                 "json | level == \"error\"\n"
                                 "json | http.status >= 500\n"
                                 "json | message contains \"timeout\"\n\n"
-                                "100,000 recent lines retained; max 1 MiB per line.";
+                                "All indexed history retained; streams use temporary disk storage.";
 
 typedef struct {
   wchar_t value;
@@ -99,10 +100,19 @@ static void paint_text(int y, int x, int width, const char *text, size_t skip, b
   attrset(A_NORMAL);
 }
 
-static void render_header(const LogStore *store, bool eof, int width) {
+static void render_header(const LogView *store, bool eof, int width) {
   attrset(COLOR_PAIR(TUI_HEADER) | A_BOLD);
   mvhline(0, 0, ' ', width);
-  mvprintw(0, 1, "LOG VIEWER  %s  %zu/%zu  %s", store->follow ? "FOLLOW" : "PAUSED", store->matches, store->count, eof ? "waiting / EOF" : "LIVE");
+  mvprintw(
+      0,
+      1,
+      "LOG VIEWER  %s  %zu/%zu  %s",
+      store->follow ? "FOLLOW" : "PAUSED",
+      store->matches,
+      store->count,
+      store->searching ? "SEARCHING / INDEXING" : (eof ? "waiting / EOF" : "LIVE")
+  );
+  if (store->unavailable) mvprintw(0, width > 55 ? width - 40 : 0, "%zu records lost to source truncation", store->unavailable);
   attrset(A_NORMAL);
 }
 
@@ -116,16 +126,22 @@ static void render_record(const LogRecord *record, int row, int width, size_t ho
   paint_text(row, 10, width - 10, record->text, horizontal, selected);
 }
 
-static void render_records(Tui *tui, const LogStore *store, const Query *query, int height, int width) {
+static void render_records(Tui *tui, Search *search, const LogView *store, const Query *query, int height, int width) {
   size_t rows = (size_t)(height - 4);
   if (store->selected < tui->top) tui->top = store->selected;
   if (store->selected >= tui->top + rows) tui->top = store->selected - rows + 1;
   for (size_t row = 0; row < rows && tui->top + row < store->matches; row++) {
     size_t index = tui->top + row;
-    const LogRecord *record = &store->records[store->visible[index]];
-    render_record(record, (int)row + 1, width, tui->horizontal, index == store->selected);
+    LogRecord record;
+    int read = search_read_result(search, index, &tui->reader, &tui->line, &record, 65536);
+    if (read < 0) {
+      tui->io_error = errno;
+      break;
+    }
+    if (!read) continue;
+    render_record(&record, (int)row + 1, width, tui->horizontal, index == store->selected);
   }
-  if (!store->matches) mvaddstr(2, 2, *query->error ? "Invalid query" : "No matching logs");
+  if (!store->matches) mvaddstr(2, 2, *query->error ? "Invalid query" : (store->searching ? "Searching..." : "No matching logs"));
 }
 
 static void render_footer(const Tui *tui, const Query *query, int height, int width) {
@@ -176,7 +192,7 @@ static void render_cursor(const Tui *tui, int height, int width) {
   move(height - 1, column < (size_t)width ? (int)column : width - 1);
 }
 
-void tui_render(Tui *tui, const LogStore *store, const Query *query, bool eof) {
+void tui_render(Tui *tui, Search *search, const LogView *store, const Query *query, bool eof) {
   int height = LINES, width = COLS;
   erase();
   if (height < 5 || width < 24) {
@@ -185,7 +201,7 @@ void tui_render(Tui *tui, const LogStore *store, const Query *query, bool eof) {
     return;
   }
   render_header(store, eof, width);
-  render_records(tui, store, query, height, width);
+  render_records(tui, search, store, query, height, width);
   render_footer(tui, query, height, width);
   render_overlay(tui, height, width);
   render_cursor(tui, height, width);

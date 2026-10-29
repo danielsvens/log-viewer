@@ -2,3 +2,5 @@ build/
 compile_commands.json
 .log
 log-viewer
+
+__pycache__/

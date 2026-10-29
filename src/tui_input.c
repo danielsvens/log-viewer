@@ -4,9 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void apply_filter(Tui *tui, LogStore *store, Query *query, const char *text) {
+static void apply_filter(Tui *tui, Search *search, Query *query, const char *text) {
   query_compile(query, text);
-  log_store_refilter(store, query);
+  search_request(search, query->text);
   tui->top = 0;
 }
 
@@ -70,10 +70,10 @@ static void edit_filter_text(Tui *tui, int key) {
   }
 }
 
-static void handle_filter_key(Tui *tui, LogStore *store, Query *query, int key) {
+static void handle_filter_key(Tui *tui, Search *search, Query *query, int key) {
   if (key == 27) {
     tui->editing = false;
-    apply_filter(tui, store, query, tui->saved_filter);
+    apply_filter(tui, search, query, tui->saved_filter);
     return;
   }
   if (key == '\n' || key == KEY_ENTER) {
@@ -81,7 +81,7 @@ static void handle_filter_key(Tui *tui, LogStore *store, Query *query, int key) 
     return;
   }
   edit_filter_text(tui, key);
-  apply_filter(tui, store, query, tui->input);
+  apply_filter(tui, search, query, tui->input);
 }
 
 static void start_filter_edit(Tui *tui, const Query *query) {
@@ -90,10 +90,11 @@ static void start_filter_edit(Tui *tui, const Query *query) {
   tui->editing = true;
 }
 
-static bool open_detail(Tui *tui, const LogStore *store) {
-  const LogRecord *record = log_store_selected(store);
-  if (!record) return true;
-  char *detail = json_format_message(record->text);
+static bool open_detail(Tui *tui, Search *search, const LogView *store) {
+  LogRecord record;
+  int read = search_read_result(search, store->selected, &tui->reader, &tui->line, &record, 0);
+  if (read <= 0) return read == 0;
+  char *detail = json_format_message(record.text);
   if (!detail) return false;
 
   tui->detail = detail;
@@ -102,39 +103,39 @@ static bool open_detail(Tui *tui, const LogStore *store) {
   return true;
 }
 
-static bool handle_navigation_key(Tui *tui, LogStore *store, Query *query, int key) {
+static bool handle_navigation_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
   switch (key) {
   case 'q':
     tui->running = false;
     break;
   case 'j':
   case KEY_DOWN:
-    log_store_move(store, 1);
+    log_view_move(search, store, 1);
     break;
   case 'k':
   case KEY_UP:
-    log_store_move(store, -1);
+    log_view_move(search, store, -1);
     break;
   case 4:
   case KEY_NPAGE:
-    log_store_move(store, LINES / 2);
+    log_view_move(search, store, LINES / 2);
     break;
   case 21:
   case KEY_PPAGE:
-    log_store_move(store, -LINES / 2);
+    log_view_move(search, store, -LINES / 2);
     break;
   case 'G':
   case KEY_END:
-    log_store_set_follow(store, true);
+    log_view_set_follow(search, store, true);
     break;
   case 'g':
-    if (tui->pending_g) log_store_first(store);
+    if (tui->pending_g) log_view_first(store);
     break;
   case KEY_HOME:
-    log_store_first(store);
+    log_view_first(store);
     break;
   case 'f':
-    log_store_set_follow(store, !store->follow);
+    log_view_set_follow(search, store, !store->follow);
     break;
   case 'h':
   case KEY_LEFT:
@@ -148,7 +149,7 @@ static bool handle_navigation_key(Tui *tui, LogStore *store, Query *query, int k
     start_filter_edit(tui, query);
     break;
   case 'c':
-    apply_filter(tui, store, query, "");
+    apply_filter(tui, search, query, "");
     break;
   case '?':
     tui->overlay = OVERLAY_HELP;
@@ -156,7 +157,7 @@ static bool handle_navigation_key(Tui *tui, LogStore *store, Query *query, int k
     break;
   case '\n':
   case KEY_ENTER:
-    if (!open_detail(tui, store)) return false;
+    if (!open_detail(tui, search, store)) return false;
     break;
   default:
     break;
@@ -165,10 +166,10 @@ static bool handle_navigation_key(Tui *tui, LogStore *store, Query *query, int k
   return true;
 }
 
-bool tui_handle_key(Tui *tui, LogStore *store, Query *query, int key) {
+bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
   if (key == ERR) return true;
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
-  else if (tui->editing) handle_filter_key(tui, store, query, key);
-  else return handle_navigation_key(tui, store, query, key);
+  else if (tui->editing) handle_filter_key(tui, search, query, key);
+  else return handle_navigation_key(tui, search, store, query, key);
   return true;
 }

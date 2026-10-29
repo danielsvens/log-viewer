@@ -1,0 +1,213 @@
+{
+  "cache": "OS-managed; repeated generated-file reads (warm, not forced cold)",
+  "runs": [
+    {
+      "lines": 1000000,
+      "bytes": 89344410,
+      "index_seconds": 0.019931,
+      "index_lines_per_second": 50173913,
+      "index_MB_per_second": 4482.8,
+      "query_seconds": 0.086025,
+      "first_result_seconds": 0.001044,
+      "matches": 3,
+      "sample_ids": [
+        1,
+        500001,
+        1000000
+      ],
+      "navigation_us_per_jump": 28.807,
+      "index_peak_rss_kib": 18580,
+      "peak_rss_kib": 20628,
+      "metadata_bytes_per_line": 16,
+      "query": "RARE_MARKER",
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log"
+    },
+    {
+      "lines": 1000000,
+      "bytes": 89344410,
+      "index_seconds": 0.017903,
+      "index_lines_per_second": 55856042,
+      "index_MB_per_second": 4990.4,
+      "query_seconds": 0.101124,
+      "first_result_seconds": 0.001208,
+      "matches": 1000000,
+      "sample_ids": [
+        1,
+        500001,
+        1000000
+      ],
+      "navigation_us_per_jump": 35.184,
+      "index_peak_rss_kib": 18580,
+      "peak_rss_kib": 28436,
+      "metadata_bytes_per_line": 16,
+      "query": "payment",
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log"
+    },
+    {
+      "lines": 1000000,
+      "bytes": 89344410,
+      "index_seconds": 0.017554,
+      "index_lines_per_second": 56968219,
+      "index_MB_per_second": 5089.8,
+      "query_seconds": 0.115218,
+      "first_result_seconds": 0.001386,
+      "matches": 3,
+      "sample_ids": [
+        1,
+        500001,
+        1000000
+      ],
+      "navigation_us_per_jump": 30.579,
+      "index_peak_rss_kib": 18580,
+      "peak_rss_kib": 20628,
+      "metadata_bytes_per_line": 16,
+      "query": "error AND timeout AND payment",
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log"
+    },
+    {
+      "lines": 1000000,
+      "bytes": 89344410,
+      "index_seconds": 0.017889,
+      "index_lines_per_second": 55901665,
+      "index_MB_per_second": 4994.5,
+      "query_seconds": 0.288323,
+      "first_result_seconds": 0.288323,
+      "matches": 1,
+      "sample_ids": [
+        1000000,
+        1000000,
+        1000000
+      ],
+      "navigation_us_per_jump": 0.102,
+      "index_peak_rss_kib": 18580,
+      "peak_rss_kib": 19604,
+      "metadata_bytes_per_line": 16,
+      "query": "json | http.status >= 500",
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log"
+    },
+    {
+      "lines": 10000000,
+      "bytes": 898444422,
+      "index_seconds": 0.158552,
+      "index_lines_per_second": 63070599,
+      "index_MB_per_second": 5666.5,
+      "query_seconds": 0.804135,
+      "first_result_seconds": 0.001078,
+      "matches": 3,
+      "sample_ids": [
+        1,
+        5000001,
+        10000000
+      ],
+      "navigation_us_per_jump": 31.6,
+      "index_peak_rss_kib": 159636,
+      "peak_rss_kib": 161684,
+      "metadata_bytes_per_line": 16,
+      "query": "RARE_MARKER",
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log"
+    },
+    {
+      "lines": 10000000,
+      "bytes": 898444422,
+      "index_seconds": 0.167742,
+      "index_lines_per_second": 59615223,
+      "index_MB_per_second": 5356.1,
+      "query_seconds": 0.986035,
+      "first_result_seconds": 0.001379,
+      "matches": 10000000,
+      "sample_ids": [
+        1,
+        5000001,
+        10000000
+      ],
+      "navigation_us_per_jump": 28.978,
+      "index_peak_rss_kib": 159252,
+      "peak_rss_kib": 239636,
+      "metadata_bytes_per_line": 16,
+      "query": "payment",
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log"
+    },
+    {
+      "lines": 10000000,
+      "bytes": 898444422,
+      "index_seconds": 0.165766,
+      "index_lines_per_second": 60325970,
+      "index_MB_per_second": 5420.0,
+      "query_seconds": 1.132702,
+      "first_result_seconds": 0.001386,
+      "matches": 3,
+      "sample_ids": [
+        1,
+        5000001,
+        10000000
+      ],
+      "navigation_us_per_jump": 31.247,
+      "index_peak_rss_kib": 159060,
+      "peak_rss_kib": 161108,
+      "metadata_bytes_per_line": 16,
+      "query": "error AND timeout AND payment",
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log"
+    },
+    {
+      "lines": 10000000,
+      "bytes": 898444422,
+      "index_seconds": 0.159168,
+      "index_lines_per_second": 62826589,
+      "index_MB_per_second": 5644.6,
+      "query_seconds": 2.960616,
+      "first_result_seconds": 2.960616,
+      "matches": 1,
+      "sample_ids": [
+        10000000,
+        10000000,
+        10000000
+      ],
+      "navigation_us_per_jump": 0.101,
+      "index_peak_rss_kib": 159764,
+      "peak_rss_kib": 160788,
+      "metadata_bytes_per_line": 16,
+      "query": "json | http.status >= 500",
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log"
+    }
+  ],
+  "environment": {
+    "cpu": "AMD Ryzen 7 7800X3D",
+    "kernel": "Linux 7.2.11-arch1-1",
+    "compiler": "GCC 16.2.1, -O2, C23",
+    "input_filesystem": "tmpfs (/tmp), warm/OS-managed cache; no forced cold-cache runs"
+  },
+  "baseline_dump_runs": [
+    {
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log",
+      "query": "RARE_MARKER",
+      "seconds": 7.020275497998227,
+      "peak_rss_kib": 20648,
+      "baseline": true,
+      "mode": "original --dump (streamed, no retained history)"
+    },
+    {
+      "dataset": "/tmp/log-viewer-benchmark/1000000.log",
+      "query": "error AND timeout AND payment",
+      "seconds": 7.036241993999283,
+      "peak_rss_kib": 20648,
+      "baseline": true,
+      "mode": "original --dump (streamed, no retained history)"
+    },
+    {
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log",
+      "query": "RARE_MARKER",
+      "seconds": 70.6900281929993,
+      "peak_rss_kib": 20648,
+      "baseline": true,
+      "mode": "original --dump (streamed, no retained history)"
+    },
+    {
+      "dataset": "/tmp/log-viewer-benchmark/10000000.log",
+      "query": "error AND timeout AND payment",
+      "seconds": 70.77542884800641,
+      "peak_rss_kib": 20648,
+      "baseline": true,
+      "mode": "original --dump (streamed, no retained history)"
+    }
+  ]
+}

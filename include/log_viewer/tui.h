@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
-#include "log_viewer/log_store.h"
+#include "log_viewer/search.h"
 #include "log_viewer/query.h"
 
 typedef enum { TUI_HEADER = 1, TUI_ERROR, TUI_WARNING, TUI_NORMAL, TUI_MUTED, TUI_STRING, TUI_LITERAL } TuiColor;
@@ -20,12 +20,15 @@ typedef struct {
   size_t top, horizontal, detail_scroll, detail_horizontal;
   char input[QUERY_CAPACITY], saved_filter[QUERY_CAPACITY];
   char *detail;
+  RecordReader reader;
+  TextBuffer line;
+  int io_error;
 } Tui;
 
 bool tui_open(Tui *tui);
 void tui_close(Tui *tui);
-void tui_render(Tui *tui, const LogStore *store, const Query *query, bool eof);
+void tui_render(Tui *tui, Search *search, const LogView *store, const Query *query, bool eof);
 /* False signals a failure to allocate modal text. ERR keys are ignored. */
-bool tui_handle_key(Tui *tui, LogStore *store, Query *query, int key);
+bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int key);
 
 #endif
