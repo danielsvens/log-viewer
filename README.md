@@ -106,7 +106,8 @@ printf 'info\nerror\n' | ./log-viewer --dump --filter error
 See [architecture](docs/architecture.md) for ownership/concurrency and
 [measured results](docs/performance.md) for the 1M/10M benchmark and tradeoffs.
 Sheredom’s bundled [JSON header](include/json.h) is under the Unlicense;
-application source is MIT licensed.
+application source is licensed under [GNU GPLv3](LICENSE) (`GPL-3.0-only`).
+Copyright (c) 2026 log-viewer contributors.
 
 ## Embedded text and code style
 
