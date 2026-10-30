@@ -3,6 +3,26 @@
 A C23 terminal log explorer with file-backed history, background search, syntax
 coloring, and a scrollable JSON detail modal
 
+## Downloads and automated releases
+
+Download binaries from [GitHub Releases](https://github.com/danielsvens/log-viewer/releases).
+Every push to `main`, including a merged pull request, runs debug and release
+core/integration tests plus allocation-cleanup and failure-path checks. A release
+is published only after they pass. Pull requests targeting `main` run the same
+checks without publishing a release.
+
+Releases are tagged `build-<workflow run number>` and target the exact tested
+commit. Each contains a Linux x86-64 binary, a `.tar.gz` archive with documentation
+and licenses, and `SHA256SUMS`. The archive preserves executable permissions;
+when downloading the standalone binary, run `chmod +x log-viewer-linux-x86_64`.
+Use `sha256sum --check SHA256SUMS` with both downloaded assets to verify them.
+
+These are dynamically linked builds made with GCC 16 on Debian 13 (trixie).
+They require a compatible Linux x86-64 system with glibc 2.41 or newer and
+ncursesw/tinfo 6 runtime libraries (Debian: `libncursesw6 libtinfo6`). Build from
+source on older distributions or other platforms. The workflow uses the built-in
+GitHub token; no release secret needs to be configured.
+
 ## Build and run
 
 Requires a compiler implementing C23 `constexpr`, `nullptr`, and `#embed`,

@@ -1,0 +1,100 @@
+name: Test and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Test and build Linux x86-64
+    runs-on: ubuntu-24.04
+    container: gcc:16.2.0-trixie
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends libncurses-dev python3
+
+      - name: Run debug tests
+        run: make --jobs=2 MODE=debug test
+
+      - name: Run release tests
+        run: make --jobs=2 MODE=release test
+
+      - name: Check allocation cleanup and failure paths
+        run: make MODE=release memcheck
+
+      - name: Package tested binary
+        env:
+          RELEASE_TAG: build-${{ github.run_number }}
+        run: |
+          package="log-viewer-${RELEASE_TAG}-linux-x86_64"
+          mkdir -p "build/package/$package/include" dist
+          install -m 755 log-viewer dist/log-viewer-linux-x86_64
+          install -m 755 log-viewer "build/package/$package/log-viewer"
+          cp LICENSE README.md "build/package/$package/"
+          cp -R docs "build/package/$package/"
+          cp include/json.h "build/package/$package/include/"
+          tar -C build/package -czf "dist/$package.tar.gz" "$package"
+          ./dist/log-viewer-linux-x86_64 --help
+          printf 'info\nerror\n' | ./dist/log-viewer-linux-x86_64 --dump --filter error
+          cd dist
+          sha256sum log-viewer-linux-x86_64 "$package.tar.gz" > SHA256SUMS
+
+      - name: Save release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test-and-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested release files
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-x86_64-release
+          path: dist/
+
+      - name: Verify release checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+
+      - name: Create release and upload binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: build-${{ github.run_number }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --target "$RELEASE_COMMIT" \
+              --title "Build $RELEASE_TAG" \
+              --generate-notes \
+              --latest
+          fi
