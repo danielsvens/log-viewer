@@ -62,10 +62,6 @@ SourceOpenResult source_open(LogSource *source, const char *path) {
     fcntl(source->spool_fd, F_SETFD, FD_CLOEXEC);
   }
 
-  source->buffer = malloc(SOURCE_READ_BYTES);
-
-  if (!source->buffer) goto error;
-
   return SOURCE_OPENED;
 
 error:
@@ -159,7 +155,10 @@ static bool index_bytes(LogSource *source, LogStore *store, size_t length) {
     if (!newline) break;
 
     uint64_t offset = source->offset + (uint64_t)(newline - source->buffer);
-    if (!log_store_append(store, source->line_start, offset - source->line_start)) return false;
+    if (source->tail_indexed) {
+      log_store_update(store, source->tail_id, source->line_start, offset - source->line_start);
+      source->tail_indexed = false;
+    } else if (!log_store_append(store, source->line_start, offset - source->line_start)) return false;
 
     source->line_start = offset + 1;
     start = newline + 1;
@@ -173,6 +172,12 @@ static bool index_bytes(LogSource *source, LogStore *store, size_t length) {
 bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *changed_from) {
   *changed_from = SIZE_MAX;
 
+  if (!source->buffer) {
+    source->buffer = malloc(SOURCE_READ_BYTES);
+
+    if (!source->buffer) return false;
+  }
+
   if (!source->attached) {
     int backing = source->regular ? source->fd : source->spool_fd;
 
@@ -182,6 +187,10 @@ bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *change
   }
 
   if (source->regular && follow && !refresh_file(source, store, changed_from)) return false;
+
+  log_store_select_file(store, source->segment);
+  store->segments[source->segment].source_id = source->source_id;
+  store->segments[source->segment].name = source->path ? source->path : "stdin";
 
   ssize_t n =
       source->regular ? pread(source->fd, source->buffer, SOURCE_READ_BYTES, (off_t)source->offset) : read(source->fd, source->buffer, SOURCE_READ_BYTES);
@@ -195,6 +204,7 @@ bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *change
       if (*changed_from > store->count) *changed_from = store->count;
       if (!log_store_append(store, source->line_start, source->offset - source->line_start)) return false;
 
+      source->tail_id = store->count - 1;
       source->tail_indexed = true;
     }
 
@@ -203,14 +213,15 @@ bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *change
 
   source->eof = false;
   if (source->tail_indexed) {
-    log_store_pop_tail(store);
-    source->tail_indexed = false;
+    if (*changed_from > source->tail_id) *changed_from = source->tail_id;
   }
 
   if (*changed_from > store->count) *changed_from = store->count;
 
   if (!source->regular && !spool_bytes(source, (size_t)n)) return false;
   if (!index_bytes(source, store, (size_t)n)) return false;
+
+  if (source->tail_indexed) log_store_update(store, source->tail_id, source->line_start, source->offset - source->line_start);
   if (source->regular && !source->file && lseek(source->fd, (off_t)source->offset, SEEK_SET) < 0) return false;
 
   return true;

@@ -106,8 +106,8 @@ static void *workspace_allocate(void *context, size_t size) {
   return workspace->data;
 }
 
-JsonFieldResult json_read_field_reuse(const char *text, size_t length, const char *path, JsonWorkspace *workspace, JsonFieldSpan *field) {
-  *field = (JsonFieldSpan){ 0 };
+JsonFieldResult json_workspace_parse(const char *text, size_t length, JsonWorkspace *workspace) {
+  workspace->root = nullptr;
 
   /* The caller supplies a NUL-terminated scratch buffer for the limit check. */
   if (!within_json_limits(text)) return JSON_FIELD_MISSING;
@@ -124,7 +124,17 @@ JsonFieldResult json_read_field_reuse(const char *text, size_t length, const cha
     return JSON_FIELD_MISSING;
   }
 
-  struct json_value_s *value = find_field(root, path);
+  workspace->root = root;
+
+  return JSON_FIELD_FOUND;
+}
+
+JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field) {
+  *field = (JsonFieldSpan){ 0 };
+
+  if (!workspace->root) return JSON_FIELD_MISSING;
+
+  struct json_value_s *value = find_field(workspace->root, path);
 
   if (!value) return JSON_FIELD_MISSING;
 
@@ -163,6 +173,14 @@ JsonFieldResult json_read_field_reuse(const char *text, size_t length, const cha
   }
 
   return JSON_FIELD_FOUND;
+}
+
+JsonFieldResult json_read_field_reuse(const char *text, size_t length, const char *path, JsonWorkspace *workspace, JsonFieldSpan *field) {
+  *field = (JsonFieldSpan){ 0 };
+
+  JsonFieldResult parsed = json_workspace_parse(text, length, workspace);
+
+  return parsed == JSON_FIELD_FOUND ? json_workspace_field(workspace, path, field) : parsed;
 }
 
 void json_workspace_destroy(JsonWorkspace *workspace) {

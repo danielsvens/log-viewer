@@ -1,1 +1,1 @@
-j/k move  gg/G ends  f follow  / filter  Enter detail  h/l pan  ? help  q quit
+Tab sources/logs  s tree  j/k move  / filter  Enter detail/select  ? help  q quit

@@ -1,10 +1,13 @@
+Tab            Focus sources / logs
+s              Show / hide source tree
 j/k or arrows  Move selection
 gg / G         First / last log
 Ctrl-d/u       Half page down / up
 f              Toggle live follow
 h/l            Horizontal scroll
 /              Edit live filter
-Enter          Inspect selected record
+Enter          Inspect record / select source
+a (tree)       Read all sources
 Esc            Cancel filter / close detail
 c              Clear filter
 q              Quit / close detail
@@ -16,6 +19,7 @@ connection refused
 JSON field queries (case-sensitive values):
 json | level == "error"
 json | http.status >= 500
-json | message contains "timeout"
+json | message ~ "error" AND message ~ "500"
+AND before OR; parentheses group conditions.
 
 All indexed history retained; streams use temporary disk storage.

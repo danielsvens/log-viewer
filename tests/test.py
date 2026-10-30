@@ -28,7 +28,7 @@ records = '{"level":"error","http":{"status":503},"message":"timeout"}\n{"level"
 for query, expected in [('', 3), ('ERROR', 1), ('~error|warning', 2),
                         ('json | level == "error"', 1),
                         ('json | http.status >= 500', 1),
-                        ('json | message contains "time"', 1),
+                        ('json | message ~ "time"', 1),
                         ('json | missing != 3', 0)]:
     result = run(records, query)
     assert result.returncode == 0, result.stderr
@@ -165,3 +165,240 @@ assert run('foo\n foo \n', ' foo ').stdout == ' foo \n'
 assert run('aaa\nbbb\n', '~^bbb$').stdout == 'bbb\n'
 
 assert run('data\n', 'x' * 512).returncode == 2
+
+# Multiple inputs preserve argument order and each file's final partial record.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    root = Path(directory)
+    (root / 'nested').mkdir()
+    first = root / 'a.log'
+    second = root / 'nested' / 'b.log'
+    first.write_text('first\n{"level":"error","message":"from first"}')
+    second.write_text('{"level":"error","message":"from second"}\nlast')
+    (root / 'no-extension').write_text('extensionless\n')
+    os.link(first, root / 'hardlink')
+    os.symlink(root, root / 'cycle')
+    os.mkfifo(root / 'unused-fifo')
+
+    def dump(*paths, query='', data=None, **kwargs):
+        return subprocess.run([BIN, '--dump', '--filter', query, *map(str, paths)],
+                              input=data, text=True, capture_output=True, timeout=5, **kwargs)
+
+    expected = first.read_text() + '\n' + second.read_text() + '\n'
+    result = dump(first, second)
+    assert result.returncode == 0 and result.stdout == expected, (result.stdout, result.stderr)
+    result = dump(second, first)
+    assert result.returncode == 0 and result.stdout == second.read_text() + '\n' + first.read_text() + '\n'
+    result = dump(root)
+    assert result.returncode == 0 and result.stdout == expected + 'extensionless\n', (result.stdout, result.stderr)
+    result = dump(root, first, second)
+    assert result.returncode == 0 and result.stdout == expected + 'extensionless\n'
+
+    for query in ('from', '~from (first|second)', 'json | level == "error"'):
+        result = dump(root, query=query)
+        assert result.returncode == 0 and len(result.stdout.splitlines()) == 2, result.stderr
+        assert 'from first' in result.stdout and 'from second' in result.stdout
+
+    result = dump(first, '-', data='stdin record\n')
+    assert result.returncode == 0 and result.stdout == first.read_text() + '\nstdin record\n'
+    assert dump(root / 'missing').returncode == 1
+    assert dump(first, root / 'missing').returncode == 1
+
+    empty = root / 'empty'
+    empty.mkdir()
+    assert dump(empty).stdout == ''
+    special = root / '-dash'
+    special.write_text('dash\n')
+    result = subprocess.run([BIN, '--dump', '--', '-dash'], cwd=root,
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0 and result.stdout == 'dash\n'
+
+# A directory opened empty discovers new files and subdirectories while running.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    root = Path(directory)
+    terminal = Terminal([str(root)])
+    try:
+        terminal.read(.2)
+        (root / 'new').mkdir()
+        active = root / 'new' / 'app.log'
+        active.write_text('DIRECTORY_DISCOVERED\n')
+        screen = terminal.read(.9)
+        assert b'DIRECTORY_DISCOVERED' in screen and b'app.log' in screen
+        with active.open('a') as file:
+            file.write('DIRECTORY_APPENDED\n')
+        assert b'DIRECTORY_APPENDED' in terminal.read(.5)
+    finally:
+        terminal.close()
+
+print('Multiple-file, recursive-directory, deduplication, and discovery tests passed.')
+
+# Existing inputs continue following independently, including partial lines and rotations.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    root = Path(directory)
+    a, b = root / 'a.log', root / 'b.log'
+    a.write_text('PARTIAL_A')
+    b.write_text('SECOND_B\n')
+    terminal = Terminal([str(root)])
+    try:
+        screen = terminal.read(.5)
+        assert b'PARTIAL_A' in screen and b'SECOND_B' in screen
+        with a.open('a') as file:
+            file.write('_COMPLETE\nAFTER_A\n')
+        screen = terminal.read(.5)
+        # Force a complete repaint; ncurses may only emit the changed suffix otherwise.
+        screen += terminal.key(b'\x0c')
+        screen += terminal.key(b'gg')
+        screen += terminal.key(b'\r')
+        assert b'PARTIAL_A_COMPLETE' in screen, screen
+        terminal.key(b'q')
+        terminal.key(b'G')
+
+        with b.open('a') as file:
+            file.write('APPEND_B\n')
+        assert b'APPEND_B' in terminal.read(.5)
+        a.rename(root / 'a.log.1')
+        a.write_text('ROTATED_A\n')
+        assert b'ROTATED_A' in terminal.read(.7)
+        # Directory rescans must not import the rotated inode again.
+        screen = terminal.key(b'/~PARTIAL_A|SECOND_B|AFTER_A|APPEND_B|ROTATED_A\r')
+        screen += terminal.read(.6)
+        screen += terminal.key(b'?')
+        screen += terminal.key(b'q')
+        assert b'5/5' in screen, screen
+        terminal.key(b'c')
+        a.write_text('X\n')
+        assert b'X' in terminal.read(.5)
+        # Historical records from the other file survive truncation of A.
+        screen = terminal.key(b'/SECOND_B\r')
+        screen += terminal.key(b'\r')
+        assert b'SECOND_B' in screen
+        terminal.key(b'q')
+    finally:
+        terminal.close()
+print('Interleaved follow, partial records, rotation deduplication, and source-local truncation passed.')
+
+# Directory search must cover every record of every file, beyond the old history cap.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    root = Path(directory)
+    expected = []
+    for source in range(3):
+        with (root / f'{source}.log').open('w') as file:
+            for line in range(120003):
+                if line in (0, 60001, 120002):
+                    record = f'error timeout payment source={source} line={line}'
+                    expected.append(record)
+                else:
+                    record = 'normal background record'
+                file.write(record + '\n')
+    result = subprocess.run([BIN, '--dump', '--filter', 'error AND timeout AND payment', str(root)],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0 and result.stdout.splitlines() == expected, result.stderr
+print('Complete multi-file history search passed (360,009 records across three inputs).')
+
+# Source tree scopes both browsing and queries without losing other sources' history.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    root = Path(directory)
+    (root / 'nested').mkdir()
+    a, b = root / 'a.log', root / 'nested' / 'b.log'
+    a.write_text('{"message":"TREE_ALPHA","level":"error"}\n')
+    b.write_text('{"message":"TREE_BRAVO","level":"info"}\n')
+    terminal = Terminal([str(root)])
+    try:
+        screen = terminal.read(.5)
+        assert b'Sources' in screen and b'All sources' in screen and b'nested/' in screen
+        assert b'a.log' in screen and b'b.log' in screen
+        terminal.key(b'\tgj\r')  # All sources -> a.log -> select
+        terminal.key(b'\t')       # back to log navigation
+        screen = terminal.key(b'\r')
+        assert b'TREE_ALPHA' in screen and b'TREE_BRAVO' not in screen
+        terminal.key(b'q')
+        terminal.key(b'/error\r')
+        terminal.key(b'\tjj\r')  # nested directory -> b.log -> select
+        screen = terminal.read(.3) + terminal.key(b'\t')
+        # A filter remains active across source changes.
+        screen += terminal.key(b'?') + terminal.key(b'q')
+        assert b'No matching logs' in screen
+        terminal.key(b'c')
+        screen = terminal.key(b'\r')
+        assert b'TREE_BRAVO' in screen and b'TREE_ALPHA' not in screen
+        terminal.key(b'q')
+
+        # Rotation keeps the same logical source selected.
+        b.rename(b.with_suffix('.old'))
+        b.write_text('{"message":"TREE_ROTATED"}\n')
+        terminal.read(.5)
+        screen = terminal.key(b'\r')
+        assert b'TREE_ROTATED' in screen
+        terminal.key(b'q')
+
+        # A newly discovered file appears without changing the selected source.
+        (root / 'new.log').write_text('TREE_NEW_FILE\n')
+        screen = terminal.read(.7)
+        assert b'new.log' in screen
+        screen = terminal.key(b'\r')
+        assert b'TREE_ROTATED' in screen and b'TREE_NEW_FILE' not in screen
+        terminal.key(b'q')
+        terminal.key(b'\ta\t')   # read all sources again
+        screen = terminal.key(b'\r')
+        assert b'TREE_NEW_FILE' in screen
+        terminal.key(b'q')
+
+        # Hidden tree and narrow terminals retain keyboard access to sources.
+        terminal.key(b's')
+        terminal.key(b'\t')
+        fcntl.ioctl(terminal.master, termios.TIOCSWINSZ, struct.pack('HHHH', 12, 45, 0, 0))
+        os.kill(terminal.proc.pid, __import__('signal').SIGWINCH)
+        screen = terminal.read(.4)
+        assert b'Sources' in screen and b'All sources' in screen
+        terminal.key(b'\x1b')
+    finally:
+        terminal.close()
+print('Source-tree selection, scoped filters, rotation, discovery, and narrow-terminal tests passed.')
+
+# JSON expressions: substring spelling, chains, precedence, and quoted operators.
+json_records = '\n'.join([
+    '{"message":"error response 500","level":"error","http":{"status":500}}',
+    '{"message":"error response 404","level":"error","http":{"status":404}}',
+    '{"message":"warning response 500","level":"warn","http":{"status":500}}',
+    '{"message":"error AND (500)","level":"info","http":{"status":"500"}}',
+    '{"message":"ERROR response 500","level":"info"}',
+    'not json',
+]) + '\n'
+for query, expected in [
+    ('json | message ~ "error" AND message ~ "500"', 2),
+    ('json | level == "error" AND http.status >= 500', 1),
+    ('json | level == "error" OR level == "warn" AND http.status >= 500', 3),
+    ('json | (level == "error" OR level == "warn") AND http.status >= 500', 2),
+    ('json | missing != 1 OR message ~ "warning"', 1),
+    ('json | missing != 1 AND message ~ "error"', 0),
+    ('json | message ~ "error AND (500)"', 1),
+    ('json | message ~ "\\u0065rror" AND message ~ "500"', 2),
+    ('json | (message~"error" AND (http.status>=500 OR level==info))', 2),
+    ('json | message ~ "error" AND message ~ "5.."', 0),
+]:
+    result = run(json_records, query)
+    assert result.returncode == 0 and len(result.stdout.splitlines()) == expected, (query, result.stdout, result.stderr)
+
+for query in [
+    'json | message contains "error"',
+    'json | message ~ "error" AND',
+    'json | OR message ~ "error"',
+    'json | (message ~ "error"',
+    'json | message ~ "error")',
+    'json | message ~ "error" message ~ "500"',
+    'json | message ~ "error" and message ~ "500"',
+    'json | message ~ "unfinished',
+    'json | message == unquoted value',
+    'json | message ~~ "error"',
+    'json | ()',
+    'json | ' + ' AND '.join(['x==1'] * 33),
+    'json | ' + '(' * 33 + 'x==1' + ')' * 33,
+]:
+    assert run(json_records, query).returncode == 2, query
+assert run('{"x":1}\n', 'json | ' + ' AND '.join(['x==1'] * 32)).stdout
+assert run('{"x":1}\n', 'json | ' + '(' * 32 + 'x==1' + ')' * 32).stdout
+print('Chained JSON conditions, ~ substring matching, precedence, and syntax errors passed.')

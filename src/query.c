@@ -9,59 +9,185 @@
 #include <string.h>
 #include <strings.h>
 
-static char *parse_field(Query *query, char *expression) {
-  char *start = text_trim(expression);
-  char *end = start;
+typedef struct {
+  Query *query;
+  const char *next;
+  size_t depth;
+} JsonParser;
 
-  while (isalnum((unsigned char)*end) || *end == '_' || *end == '.' || *end == '-') end++;
-
-  size_t length = (size_t)(end - start);
-
-  if (!length || length >= sizeof(query->field)) return nullptr;
-
-  memcpy(query->field, start, length);
-  query->field[length] = 0;
-
-  return text_trim(end);
+static void skip_space(JsonParser *parser) {
+  while (isspace((unsigned char)*parser->next)) parser->next++;
 }
 
-static char *parse_operator(Query *query, char *expression) {
+static bool take_keyword(JsonParser *parser, const char *keyword) {
+  skip_space(parser);
+
+  size_t length = strlen(keyword);
+
+  if (strncmp(parser->next, keyword, length)) return false;
+
+  unsigned char end = (unsigned char)parser->next[length];
+
+  if (isalnum(end) || end == '_' || end == '-' || end == '.') return false;
+
+  parser->next += length;
+
+  return true;
+}
+
+static bool append_expression(JsonParser *parser, JsonExpression expression, size_t *node) {
+  Query *query = parser->query;
+
+  if (query->expression_count == QUERY_MAX_JSON_NODES) return false;
+
+  *node = query->expression_count;
+  query->expressions[query->expression_count++] = expression;
+
+  return true;
+}
+
+static bool parse_json_condition(JsonParser *parser, size_t *node) {
+  Query *query = parser->query;
+
+  if (query->condition_count == QUERY_MAX_JSON_CONDITIONS) return false;
+
+  JsonCondition *condition = &query->conditions[query->condition_count];
+  skip_space(parser);
+
+  const char *start = parser->next;
+
+  while (isalnum((unsigned char)*parser->next) || *parser->next == '_' || *parser->next == '.' || *parser->next == '-') parser->next++;
+
+  size_t length = (size_t)(parser->next - start);
+
+  if (!length || length >= sizeof(condition->field)) return false;
+
+  memcpy(condition->field, start, length);
+  condition->field[length] = 0;
+  skip_space(parser);
+
   static const struct {
     const char *text;
     QueryOperator operator;
   } operators[] = { { "==", QUERY_EQUAL },  { "!=", QUERY_NOT_EQUAL }, { ">=", QUERY_GREATER_EQUAL }, { "<=", QUERY_LESS_EQUAL },
-                    { ">", QUERY_GREATER }, { "<", QUERY_LESS },       { "contains", QUERY_CONTAINS } };
+                    { ">", QUERY_GREATER }, { "<", QUERY_LESS },       { "~", QUERY_CONTAINS } };
+
+  bool found = false;
 
   for (size_t i = 0; i < sizeof(operators) / sizeof(*operators); i++) {
-    size_t length = strlen(operators[i].text);
+    size_t size = strlen(operators[i].text);
 
-    if (strncmp(expression, operators[i].text, length) != 0) continue;
-    if (operators[i].operator == QUERY_CONTAINS && !isspace((unsigned char)expression[length])) continue;
+    if (strncmp(parser->next, operators[i].text, size)) continue;
 
-    query->operator = operators[i].operator;
-
-    return text_trim(expression + length);
+    condition->operator = operators[i].operator;
+    parser->next += size;
+    found = true;
+    break;
   }
 
-  return nullptr;
+  if (!found) return false;
+
+  skip_space(parser);
+  start = parser->next;
+
+  if (*start == '"') {
+    parser->next++;
+    bool escaped = false, closed = false;
+
+    while (*parser->next) {
+      char byte = *parser->next++;
+
+      if (escaped) escaped = false;
+      else if (byte == '\\') escaped = true;
+      else if (byte == '"') {
+        closed = true;
+        break;
+      }
+    }
+
+    if (!closed) return false;
+  } else {
+    while (*parser->next && !isspace((unsigned char)*parser->next) && *parser->next != '(' && *parser->next != ')') parser->next++;
+  }
+
+  length = (size_t)(parser->next - start);
+
+  if (!length || length >= sizeof(condition->value)) return false;
+
+  char value[sizeof(condition->value)];
+  memcpy(value, start, length);
+  value[length] = 0;
+
+  if (*start == '"') {
+    if (!json_decode_string(value, condition->value, sizeof(condition->value))) return false;
+  } else memcpy(condition->value, value, length + 1);
+
+  char *end;
+  condition->numeric_value = strtod(condition->value, &end);
+  condition->numeric_valid = end != condition->value && !*end;
+
+  size_t index = query->condition_count++;
+
+  return append_expression(parser, (JsonExpression){ JSON_EXPRESSION_CONDITION, index, 0 }, node);
+}
+
+static bool parse_json_or(JsonParser *parser, size_t *node);
+
+static bool parse_json_primary(JsonParser *parser, size_t *node) {
+  skip_space(parser);
+
+  if (*parser->next != '(') return parse_json_condition(parser, node);
+  if (parser->depth == QUERY_MAX_JSON_CONDITIONS) return false;
+
+  parser->next++;
+  parser->depth++;
+
+  if (!parse_json_or(parser, node)) return false;
+
+  skip_space(parser);
+
+  if (*parser->next != ')') return false;
+
+  parser->next++;
+  parser->depth--;
+
+  return true;
+}
+
+static bool parse_json_and(JsonParser *parser, size_t *node) {
+  if (!parse_json_primary(parser, node)) return false;
+
+  while (take_keyword(parser, "AND")) {
+    size_t right;
+
+    if (!parse_json_primary(parser, &right)) return false;
+    if (!append_expression(parser, (JsonExpression){ JSON_EXPRESSION_AND, *node, right }, node)) return false;
+  }
+
+  return true;
+}
+
+static bool parse_json_or(JsonParser *parser, size_t *node) {
+  if (!parse_json_and(parser, node)) return false;
+
+  while (take_keyword(parser, "OR")) {
+    size_t right;
+
+    if (!parse_json_and(parser, &right)) return false;
+    if (!append_expression(parser, (JsonExpression){ JSON_EXPRESSION_OR, *node, right }, node)) return false;
+  }
+
+  return true;
 }
 
 static bool compile_json_query(Query *query) {
-  char expression[QUERY_CAPACITY];
-  snprintf(expression, sizeof(expression), "%s", query->text + 6);
+  JsonParser parser = { .query = query, .next = query->text + 6 };
 
-  char *operator = parse_field(query, expression);
+  if (!parse_json_or(&parser, &query->root)) return false;
 
-  if (!operator) return false;
+  skip_space(&parser);
 
-  char *value = parse_operator(query, operator);
-
-  if (!value || !*value || strlen(value) >= sizeof(query->value)) return false;
-  if (*value == '"') return json_decode_string(value, query->value, sizeof(query->value));
-
-  snprintf(query->value, sizeof(query->value), "%s", value);
-
-  return true;
+  return !*parser.next;
 }
 
 static bool prepare_terms(Query *query);
@@ -97,17 +223,12 @@ bool query_compile(Query *query, const char *text) {
 
     if (!compile_json_query(query)) {
       query->allocation_failed = errno == ENOMEM;
-      snprintf(query->error, sizeof(query->error), "Expected: json | field == \"value\" (== != > >= < <= contains)");
+      snprintf(query->error, sizeof(query->error), "Expected: json | field == \"value\" (== != > >= < <= ~; AND/OR)");
     }
   }
 
   if (query->kind == QUERY_TEXT && !prepare_terms(query)) snprintf(query->error, sizeof(query->error), "Expected nonempty AND terms (max %d)", QUERY_MAX_TERMS);
 
-  if (query->kind == QUERY_JSON) {
-    char *end;
-    query->numeric_value = strtod(query->value, &end);
-    query->numeric_valid = end != query->value && !*end;
-  }
 
   return !*query->error;
 }
@@ -219,7 +340,7 @@ QueryResult query_match_text_chunk(const Query *query, const char *text, size_t 
   return all ? QUERY_MATCH : QUERY_NO_MATCH;
 }
 
-static bool compare_field(const Query *query, const JsonFieldSpan *field) {
+static bool compare_field(const JsonCondition *query, const JsonFieldSpan *field) {
   size_t length = strlen(query->value);
   bool equal = field->length == length && !memcmp(field->text, query->value, length);
 
@@ -249,6 +370,28 @@ static bool compare_field(const Query *query, const JsonFieldSpan *field) {
   default:
     return false;
   }
+}
+
+static QueryResult match_json_expression(const Query *query, size_t node, JsonWorkspace *workspace) {
+  JsonExpression expression = query->expressions[node];
+
+  if (expression.kind == JSON_EXPRESSION_CONDITION) {
+    const JsonCondition *condition = &query->conditions[expression.left];
+    JsonFieldSpan field;
+    JsonFieldResult found = json_workspace_field(workspace, condition->field, &field);
+
+    if (found == JSON_FIELD_ERROR) return QUERY_FAILURE;
+
+    return found == JSON_FIELD_FOUND && compare_field(condition, &field) ? QUERY_MATCH : QUERY_NO_MATCH;
+  }
+
+  QueryResult left = match_json_expression(query, expression.left, workspace);
+
+  if (left == QUERY_FAILURE) return left;
+  if (expression.kind == JSON_EXPRESSION_AND && left == QUERY_NO_MATCH) return left;
+  if (expression.kind == JSON_EXPRESSION_OR && left == QUERY_MATCH) return left;
+
+  return match_json_expression(query, expression.right, workspace);
 }
 
 QueryResult query_match_span(const Query *query, const char *text, size_t length, QueryScratch *scratch) {
@@ -296,12 +439,11 @@ QueryResult query_match_span(const Query *query, const char *text, size_t length
     return result == 0 ? QUERY_MATCH : QUERY_NO_MATCH;
   }
 
-  JsonFieldSpan field;
-  JsonFieldResult found = json_read_field_reuse(text, length, query->field, &scratch->json, &field);
+  JsonFieldResult found = json_workspace_parse(text, length, &scratch->json);
 
   if (found == JSON_FIELD_ERROR) return QUERY_FAILURE;
 
-  return found == JSON_FIELD_FOUND && compare_field(query, &field) ? QUERY_MATCH : QUERY_NO_MATCH;
+  return found == JSON_FIELD_FOUND ? match_json_expression(query, query->root, &scratch->json) : QUERY_NO_MATCH;
 }
 
 bool query_matches(const Query *query, const char *text) {

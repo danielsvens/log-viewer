@@ -11,6 +11,8 @@ make, POSIX threads, and ncursesw development files. Verified with GCC 16.
 ```sh
 make MODE=release
 ./log-viewer app.log
+./log-viewer app.log worker.log
+./log-viewer /var/log/my-service/
 my-command 2>&1 | ./log-viewer
 ./log-viewer --filter 'error AND timeout AND payment' app.log
 ```
@@ -21,14 +23,51 @@ not evicted at 100,000 lines; all indexed records remain accessible. File growth
 and rename rotation are followed automatically. Pipes remain browsable after EOF.
 Keyboard input comes from `/dev/tty`, independently of piped log input.
 
+Pass any number of files and directories. Directories are traversed recursively,
+including extensionless and hidden regular files. Symlinks and special files
+inside directories are skipped; overlapping paths and hard links are deduplicated.
+Regular-file history is read in argument order, with sorted depth-first traversal
+within each directory. Streams interleave as input becomes available. Records from different files remain separate even without final
+newlines. This is ingestion order, rather than timestamp merging.
+
+In the TUI, all inputs share one searchable history. The selected record's source
+path appears above the key hints. Each file follows appends, rename rotation, and
+truncation independently. Directories are rescanned approximately every 250 ms to
+discover new files and subdirectories. A rotated inode already read is not imported
+a second time. Use directories containing uncompressed text logs; binary systemd
+journal files and compressed archives are not decoded.
+
+`--dump` reads the currently discovered inputs to EOF and exits; it does not watch
+for later directory additions. `-` includes stdin alongside file inputs, and `--`
+ends option parsing for names starting with a dash. Unreadable inputs are errors.
+The process needs descriptors for all open files and retained rotations; the OS
+file-descriptor limit still applies.
+
 Unterminated final records are indexed at EOF. If more bytes arrive, the trailing
 record is extended and its filter result reevaluated. Lines can exceed 1 MiB;
 there is no silent line truncation in storage or search.
+
+## Sources
+
+The sidebar shows the loaded files grouped by directory, with **All sources** at
+its root. Press **Tab** to focus the tree, move with **j/k** or arrows, and press
+**Enter** or **Space** to read a file. Select **All sources** (or press **a** while
+in the tree) to return to the combined history. An asterisk marks the active scope.
+**Tab** returns to the log list; **s** shows or hides the sidebar. On narrow
+terminals the focused tree fills the available width.
+
+The current text/regex/JSON filter applies within the selected source. Switching
+sources preserves the filter and resumes follow. All sources keep ingesting in
+the background, so switching back retains their history. Rotations stay grouped
+under the original input path, and newly discovered files appear automatically.
+Directory rows group files; select a file or the All sources row to change scope.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
+| Tab | Switch source tree / log focus |
+| `s` | Show / hide source tree |
 | `j` / `k`, arrows | Move selection and pause follow |
 | `gg` / `G` | First record / last record and resume follow |
 | `Ctrl-d` / `Ctrl-u`, PageDown / PageUp | Move half a page |
@@ -49,6 +88,9 @@ it is open. Regular rows preview the first 64 KiB; Enter reads the full record.
 
 ## Filters
 
+See the [query language guide](docs/queries.md) for syntax, operators, examples,
+quoting rules, and current limitations.
+
 Text searches are ASCII case-insensitive. An uppercase ` AND ` separator requires
 all terms to occur in the same record, in any order. Without it, text is a single
 substring (so `connection refused` remains a phrase). Up to 32 AND terms and
@@ -61,15 +103,18 @@ error AND timeout AND payment
 ~error|warn
 json | level == "error"
 json | http.status >= 500
-json | message contains "timeout"
+json | message ~ "timeout"
+json | message ~ "error" AND message ~ "500"
 ```
 
-JSON filters accept one field condition. Operators: `==`, `!=`, `>`, `>=`, `<`,
-`<=`, `contains`. Dot-separated paths select nested object fields. Strings are
-decoded before comparison. Field comparisons are case-sensitive; ordering
-requires JSON numbers. Missing fields and invalid JSON do not match. Boolean
-and null values may be unquoted. Compound JSON conditions and array indexing
-are not supported. JSON parsing is skipped for text and regex queries.
+JSON conditions can be chained with uppercase `AND` and `OR`; `AND` binds more
+tightly, and parentheses override the order. Operators: `==`, `!=`, `>`, `>=`, `<`,
+`<=`, `~`. Dot-separated paths select nested object fields. Strings are decoded
+before comparison. Field comparisons are case-sensitive; ordering requires JSON
+numbers. Missing fields make their condition false, and invalid JSON never
+matches. Boolean and null values may be unquoted. Array indexing is not supported.
+JSON `~` is a literal substring operator, replacing the previous `contains`
+spelling. JSON parsing is skipped for text and regex queries.
 
 Search scans the entire index in original order, publishing matching record IDs
 in batches. A background worker handles indexing and searching; the TUI renders
@@ -88,6 +133,10 @@ printf 'info\nerror\n' | ./log-viewer --dump --filter error
 
 - Each line uses 16 bytes of metadata, plus up to 8 bytes per matching result on
   64-bit systems. An empty filter uses implicit IDs and no result array.
+- A run table maps contiguous batches of record IDs to source generations,
+  adding two machine words per run. Interleaved live writes can produce one run
+  per line; normal initial indexing needs one run per nonempty file. All inputs
+  share a single 1 MiB ingestion buffer.
 - Raw regular-file text stays in its file. Buffered `pread` avoids mapping
   lifetime hazards when external processes truncate files.
 - Rotated file descriptors are retained so old records remain readable. If a

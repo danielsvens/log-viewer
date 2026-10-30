@@ -50,6 +50,7 @@ bool tui_open(Tui *tui) {
   initialize_colors();
 
   tui->running = true;
+  tui->tree_visible = true;
 
   return true;
 }
@@ -63,6 +64,7 @@ void tui_close(Tui *tui) {
   if (tui->tty) fclose(tui->tty);
 
   free(tui->detail);
+  source_tree_destroy(&tui->tree);
   record_reader_destroy(&tui->reader);
   text_buffer_destroy(&tui->line);
 

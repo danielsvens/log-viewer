@@ -3,6 +3,8 @@
 
 typedef struct {
   const char *path;
+  char **paths;
+  unsigned int path_count;
   const char *filter;
   bool dump;
   char error[160];

@@ -95,11 +95,11 @@ int app_run(const Options *options) {
 
   Search *search = nullptr;
   Tui tui = { 0 };
-  SourceOpenResult opened = search_open(&search, options->path, options->filter, !options->dump);
+  SourceOpenResult opened = search_open_paths(&search, (const char *const *)options->paths, options->path_count, options->filter, !options->dump);
 
   if (opened != SOURCE_OPENED) {
     if (opened == SOURCE_INPUT_REQUIRED) fprintf(stderr, "Provide a log file or pipe: command | log-viewer\n");
-    else perror(options->path ? options->path : "Log input");
+    else perror(options->path_count == 1 ? options->path : "Log inputs");
 
     query_destroy(&query);
     return opened == SOURCE_INPUT_REQUIRED ? 2 : 1;

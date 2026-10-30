@@ -1,3 +1,5 @@
-Usage: log-viewer [--filter QUERY] [--dump] [FILE|-]
-Pipe logs or follow a file. / filters, Enter details, ? help, q quit.
+Usage: log-viewer [--filter QUERY] [--dump] [FILE|DIRECTORY|-]...
+Pipe logs, follow multiple files, or recursively open directories. / filters, Enter details, ? help, q quit.
 --dump prints matching lines without the TUI (until EOF).
+Directories read regular files in sorted traversal order and discover new files.
+-- ends options; use - to include stdin alongside files.

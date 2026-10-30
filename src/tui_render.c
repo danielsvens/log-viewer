@@ -125,19 +125,20 @@ static void render_header(const LogView *store, bool eof, int width) {
   attrset(A_NORMAL);
 }
 
-static void render_record(const LogRecord *record, int row, int width, size_t horizontal, bool selected) {
+static void render_record(const LogRecord *record, int row, int left, int width, size_t horizontal, bool selected) {
   if (selected) {
     attrset(A_REVERSE);
-    mvhline(row, 0, ' ', width);
+    mvhline(row, left, ' ', width);
   }
 
   attrset(COLOR_PAIR(TUI_MUTED) | (selected ? A_REVERSE : 0));
-  mvprintw(row, 0, "%7lu %c ", record->id, selected ? '>' : ' ');
-  paint_text(row, 10, width - 10, record->text, horizontal, selected);
+  mvprintw(row, left, "%7lu %c ", record->id, selected ? '>' : ' ');
+  paint_text(row, left + 10, width - 10, record->text, horizontal, selected);
 }
 
-static void render_records(Tui *tui, Search *search, const LogView *store, const Query *query, int height, int width) {
+static void render_records(Tui *tui, Search *search, const LogView *store, const Query *query, int height, int left, int width) {
   size_t rows = (size_t)(height - 4);
+  tui->selected_source = nullptr;
 
   if (store->selected < tui->top) tui->top = store->selected;
   if (store->selected >= tui->top + rows) tui->top = store->selected - rows + 1;
@@ -153,15 +154,59 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
     }
     if (!read) continue;
 
-    render_record(&record, (int)row + 1, width, tui->horizontal, index == store->selected);
+    if (index == store->selected) tui->selected_source = record.source;
+
+    render_record(&record, (int)row + 1, left, width, tui->horizontal, index == store->selected);
   }
 
-  if (!store->matches) mvaddstr(2, 2, *query->error ? "Invalid query" : (store->searching ? "Searching..." : "No matching logs"));
+  if (!store->matches) mvaddstr(2, left + 2, *query->error ? "Invalid query" : (store->searching ? "Searching..." : "No matching logs"));
+}
+
+static void render_tree(Tui *tui, Search *search, int height, int width) {
+  attrset(COLOR_PAIR(TUI_MUTED) | (tui->tree_focus ? A_BOLD : 0));
+  mvaddnstr(1, 1, tui->tree_focus ? "Sources [Tab: logs]" : "Sources [Tab: focus]", width - 2);
+  mvvline(1, width - 1, ACS_VLINE, height - 4);
+
+  size_t rows = height > 5 ? (size_t)(height - 5) : 0;
+
+  if (!rows) return;
+
+  SourceTree *tree = &tui->tree;
+
+  if (tree->cursor < tree->top) tree->top = tree->cursor;
+  if (tree->cursor >= tree->top + rows) tree->top = tree->cursor - rows + 1;
+
+  size_t selected = search_selected_source(search);
+
+  for (size_t i = 0; i < rows && tree->top + i < tree->count; i++) {
+    size_t index = tree->top + i;
+    SourceTreeRow row = tree->rows[index];
+    bool focused = tui->tree_focus && index == tree->cursor;
+    bool active = !row.directory && row.source == selected;
+
+    attrset(COLOR_PAIR(TUI_MUTED) | (focused ? A_REVERSE : 0));
+    mvhline((int)i + 2, 0, ' ', width - 1);
+    mvaddch((int)i + 2, 0, active ? '*' : ' ');
+
+    size_t indent = row.depth * 2 + 2;
+    if (indent > (size_t)width / 2) indent = (size_t)width / 2;
+
+    char label[512];
+    size_t length = row.length < sizeof(label) - 1 ? row.length : sizeof(label) - 1;
+    memcpy(label, row.name, length);
+    label[length] = 0;
+
+    paint_text((int)i + 2, (int)indent, width - (int)indent - 2, label, 0, focused);
+  }
+
+  attrset(A_NORMAL);
 }
 
 static void render_footer(const Tui *tui, const Query *query, int height, int width) {
   attrset(COLOR_PAIR(TUI_MUTED));
   mvhline(height - 3, 0, ACS_HLINE, width);
+
+  if (tui->selected_source) paint_text(height - 3, 1, width - 2, tui->selected_source, 0, false);
   mvaddnstr(height - 2, 1, (const char *)KEY_HINT_TEXT, width - 2);
 
   attrset(COLOR_PAIR(*query->error ? TUI_ERROR : TUI_NORMAL));
@@ -233,8 +278,20 @@ void tui_render(Tui *tui, Search *search, const LogView *store, const Query *que
     return;
   }
 
+  if (!source_tree_sync(&tui->tree, search)) {
+    tui->io_error = errno ? errno : ENOMEM;
+    return;
+  }
+
+  int sidebar = tui->tree_visible && width >= 68 ? width / 3 : 0;
+  if (sidebar > 36) sidebar = 36;
+
+  bool tree_only = tui->tree_visible && tui->tree_focus && !sidebar;
+
   render_header(store, eof, width);
-  render_records(tui, search, store, query, height, width);
+
+  if (sidebar || tree_only) render_tree(tui, search, height, sidebar ? sidebar : width);
+  if (!tree_only) render_records(tui, search, store, query, height, sidebar, width - sidebar);
   render_footer(tui, query, height, width);
   render_overlay(tui, height, width);
 

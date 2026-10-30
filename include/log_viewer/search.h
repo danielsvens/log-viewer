@@ -8,6 +8,8 @@
 
 typedef struct Search Search;
 
+constexpr size_t SEARCH_ALL_SOURCES = SIZE_MAX;
+
 typedef struct {
   size_t count, matches, scanned, unavailable;
   uint64_t revision;
@@ -22,8 +24,14 @@ typedef struct {
 } LogView;
 
 SourceOpenResult search_open(Search **search, const char *path, const char *expression, bool follow);
+SourceOpenResult search_open_paths(Search **search, const char *const *paths, size_t count, const char *expression, bool follow);
 void search_close(Search *search);
 void search_request(Search *search, const char *expression);
+/* Names are borrowed and remain valid until search_close(), including after discovery. */
+size_t search_source_count(Search *search);
+const char *search_source_name(Search *search, size_t source);
+size_t search_selected_source(Search *search);
+void search_select_source(Search *search, size_t source);
 SearchStatus search_status(Search *search);
 void search_sync_view(Search *search, LogView *view);
 void log_view_move(Search *search, LogView *view, long delta);

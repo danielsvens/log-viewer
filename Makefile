@@ -26,7 +26,7 @@ endif
 # ===== Sources / Objects =====
 SRC  := $(sort $(shell find src -type f -name '*.c'))
 OBJ  := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
-CORE_SRC := src/json_support.c src/log_store.c src/query.c src/search.c src/source.c src/text.c
+CORE_SRC := src/json_support.c src/log_store.c src/query.c src/search.c src/source.c src/source_set.c src/source_tree.c src/text.c
 CORE_OBJ := $(patsubst src/%.c,$(OBJDIR)/%.o,$(CORE_SRC))
 TEST_OBJ := $(OBJDIR)/tests/core_test.o
 TEST_BIN := $(OBJDIR)/core-test

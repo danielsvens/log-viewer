@@ -205,11 +205,78 @@ static bool handle_navigation_key(Tui *tui, Search *search, LogView *store, Quer
   return true;
 }
 
+static void handle_tree_key(Tui *tui, Search *search, LogView *view, int key) {
+  SourceTree *tree = &tui->tree;
+  size_t page = LINES > 6 ? (size_t)(LINES - 6) : 1;
+
+  switch (key) {
+  case 'j':
+  case KEY_DOWN:
+    if (tree->cursor + 1 < tree->count) tree->cursor++;
+    break;
+
+  case 'k':
+  case KEY_UP:
+    if (tree->cursor) tree->cursor--;
+    break;
+
+  case 4:
+  case KEY_NPAGE:
+    tree->cursor = tree->count && page < tree->count - tree->cursor ? tree->cursor + page : (tree->count ? tree->count - 1 : 0);
+    break;
+
+  case 21:
+  case KEY_PPAGE:
+    tree->cursor = tree->cursor > page ? tree->cursor - page : 0;
+    break;
+
+  case 'g':
+  case KEY_HOME:
+    tree->cursor = 0;
+    break;
+
+  case 'G':
+  case KEY_END:
+    tree->cursor = tree->count ? tree->count - 1 : 0;
+    break;
+
+  case 'a':
+    tree->cursor = 0;
+    [[fallthrough]];
+  case ' ':
+  case '\n':
+  case KEY_ENTER:
+    if (tree->cursor < tree->count && !tree->rows[tree->cursor].directory) {
+      search_select_source(search, tree->rows[tree->cursor].source);
+      tui->top = 0;
+      view->selected = view->anchor = 0;
+      view->follow = true;
+      tui->pending_g = false;
+    }
+    break;
+
+  case 27:
+    tui->tree_focus = false;
+    break;
+
+  default:
+    break;
+  }
+}
+
 bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
   if (key == ERR) return true;
 
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
   else if (tui->editing) handle_filter_key(tui, search, query, key);
+  else if (key == '\t') {
+    tui->tree_visible = true;
+    tui->tree_focus = !tui->tree_focus;
+    tui->pending_g = false;
+  } else if (key == 's') {
+    tui->tree_visible = !tui->tree_visible;
+    if (!tui->tree_visible) tui->tree_focus = false;
+  } else if (tui->tree_focus && key != 'q' && key != '?' && key != '/' && key != 'c') handle_tree_key(tui, search, store, key);
   else return handle_navigation_key(tui, search, store, query, key);
 
   return true;

@@ -15,7 +15,7 @@ typedef struct {
   bool file, regular, eof, attached, tail_indexed;
   char *buffer;
   uint64_t offset, line_start;
-  size_t segment;
+  size_t segment, tail_id, source_id;
   struct stat identity;
 } LogSource;
 

@@ -18,3 +18,20 @@ with tempfile.TemporaryDirectory() as directory:
         failed += result.returncode != 0
 assert failed >= 8, 'Allocation injection did not exercise enough failure paths'
 print(f'Allocation failure cleanup verified ({failed} failures injected).')
+
+# Exercise failures throughout recursive discovery, owned path copies, and file setup.
+failed = 0
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    (root / 'nested').mkdir()
+    for index in range(4):
+        (root / 'nested' / f'{index}.log').write_text('{"http":{"status":503}}\n')
+    for allocation in range(1, 81):
+        result = subprocess.run([sys.argv[1], '--dump', '--filter', 'json | http.status >= 500', str(root)],
+                                env={**os.environ, 'LOG_VIEWER_FAIL_ALLOCATION': str(allocation)},
+                                capture_output=True, timeout=5)
+        assert result.returncode in (0, 1, 2), (allocation, result.stderr)
+        assert b'Unreleased application allocations' not in result.stderr, (allocation, result.stderr)
+        failed += result.returncode != 0
+assert failed >= 20, 'Directory allocation injection did not exercise enough failure paths'
+print(f'Directory allocation failure cleanup verified ({failed} failures injected).')

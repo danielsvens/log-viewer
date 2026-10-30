@@ -3,6 +3,7 @@
 #include "log_viewer/query.h"
 #include "log_viewer/source.h"
 #include "log_viewer/search.h"
+#include "log_viewer/source_tree.h"
 #include "log_viewer/text.h"
 
 #include <assert.h>
@@ -38,6 +39,39 @@ static void test_independent_queries(void) {
   query_destroy(&first);
   query_destroy(&second);
   query_destroy(&second);
+}
+
+static void test_json_chains(void) {
+  Query query = { 0 };
+  QueryScratch scratch = { 0 };
+  const char *expression = "json | message ~ \"error\" AND message ~ \"500\"";
+
+  assert(query_compile(&query, expression));
+  assert(query_matches(&query, "{\"message\":\"error 500\"}"));
+  assert(!query_matches(&query, "{\"message\":\"error 404\"}"));
+  assert(!query_matches(&query, "{\"message\":\"ERROR 500\"}"));
+
+  assert(query_compile(&query, "json | (a==1 OR b==2) AND c==3"));
+  assert(query_matches(&query, "{\"a\":1,\"c\":3}"));
+  assert(!query_matches(&query, "{\"a\":1,\"c\":0}"));
+  assert(query_compile(&query, "json | a==1 OR b==2 AND c==3"));
+  assert(query_matches(&query, "{\"a\":1,\"c\":0}"));
+
+  assert(query_compile(&query, "json | context ~ \"error\" AND context.message ~ \"500\""));
+  const char *record = "{\"context\":{\"message\":\"error 500\"}}";
+
+  for (size_t i = 0; i < 100; i++) {
+    assert(query_match_span(&query, record, strlen(record), &scratch) == QUERY_MATCH);
+    assert(query_match_span(&query, "invalid", 7, &scratch) == QUERY_NO_MATCH);
+  }
+
+  assert(query_compile(&query, query.text));
+  assert(query_matches(&query, record));
+  assert(!query_compile(&query, "json | context contains error"));
+  assert(!query_matches(&query, record));
+
+  query_scratch_destroy(&scratch);
+  query_destroy(&query);
 }
 
 static void test_record_transforms(void) {
@@ -315,9 +349,187 @@ static void test_64_bit_offsets(void) {
   log_store_destroy(&store);
 }
 
+static void assert_record(LogStore *store, size_t id, const char *expected) {
+  RecordLocation location;
+  RecordReader reader = { 0 };
+  const char *text;
+
+  assert(log_store_location(store, id, &location));
+  assert(location.length == strlen(expected));
+  assert(record_reader_get(&reader, location, &text) == 1);
+  assert(!memcmp(text, expected, strlen(expected)));
+
+  record_reader_destroy(&reader);
+}
+
+static void test_interleaved_sources(void) {
+  char first[] = "/tmp/log-viewer-first-XXXXXX";
+  char second[] = "/tmp/log-viewer-second-XXXXXX";
+  char empty[] = "/tmp/log-viewer-empty-XXXXXX";
+  int a = mkstemp(first), b = mkstemp(second), c = mkstemp(empty);
+
+  assert(a >= 0 && b >= 0 && c >= 0);
+  assert(write(a, "alpha", 5) == 5);
+  assert(write(b, "bravo\n", 6) == 6);
+
+  LogSource sources[3];
+  assert(source_open(&sources[0], first) == SOURCE_OPENED);
+  assert(source_open(&sources[1], second) == SOURCE_OPENED);
+  assert(source_open(&sources[2], empty) == SOURCE_OPENED);
+
+  LogStore store;
+  log_store_init(&store);
+
+  size_t changed;
+
+  for (size_t i = 0; i < 3; i++) {
+    assert(source_poll(&sources[i], &store, true, &changed));
+    assert(source_poll(&sources[i], &store, true, &changed));
+  }
+
+  assert(store.count == 2);
+  assert_record(&store, 0, "alpha");
+  assert_record(&store, 1, "bravo");
+
+  assert(write(a, "-next\nA2", 8) == 8);
+  assert(source_poll(&sources[0], &store, true, &changed) && changed == 0);
+  assert(source_poll(&sources[0], &store, true, &changed));
+  assert(write(b, "B2\n", 3) == 3);
+  assert(source_poll(&sources[1], &store, true, &changed));
+  assert(store.count == 4);
+
+  assert_record(&store, 0, "alpha-next");
+  assert_record(&store, 1, "bravo");
+  assert_record(&store, 2, "A2");
+  assert_record(&store, 3, "B2");
+
+  assert(ftruncate(a, 0) == 0 && pwrite(a, "new\n", 4, 0) == 4);
+  assert(source_poll(&sources[0], &store, true, &changed) && changed == 0);
+  assert(store.unavailable == 2 && store.count == 5);
+
+  RecordLocation location;
+  assert(log_store_location(&store, 0, &location) && !location.available);
+  assert(log_store_location(&store, 2, &location) && !location.available);
+  assert_record(&store, 1, "bravo");
+  assert_record(&store, 3, "B2");
+  assert_record(&store, 4, "new");
+  assert(log_store_location(&store, 4, &location) && !strcmp(location.name, first));
+
+  for (size_t i = 0; i < 3; i++) source_close(&sources[i]);
+
+  log_store_destroy(&store);
+  close(a);
+  close(b);
+  close(c);
+  unlink(first);
+  unlink(second);
+  unlink(empty);
+}
+
+static SearchStatus wait_for_counts(Search *search, size_t count, size_t matches) {
+  for (size_t i = 0; i < 5000; i++) {
+    SearchStatus status = search_status(search);
+
+    assert(!status.error);
+    if (status.eof && !status.searching && status.count == count && status.matches == matches) return status;
+
+    usleep(1000);
+  }
+
+  assert(!"multiple-source follow timed out");
+
+  return (SearchStatus){ 0 };
+}
+
+static void test_multiple_source_search(void) {
+  char first[] = "/tmp/log-viewer-follow-a-XXXXXX";
+  char second[] = "/tmp/log-viewer-follow-b-XXXXXX";
+  int a = mkstemp(first), b = mkstemp(second);
+
+  assert(a >= 0 && b >= 0);
+  assert(write(a, "alpha\n", 6) == 6 && write(b, "bravo\n", 6) == 6);
+
+  const char *paths[] = { first, second };
+  Search *search = nullptr;
+
+  assert(search_open_paths(&search, paths, 2, "", true) == SOURCE_OPENED);
+  wait_for_counts(search, 2, 2);
+
+  assert(search_source_count(search) == 2);
+  assert(!strcmp(search_source_name(search, 0), first));
+  assert(search_source_name(search, 2) == nullptr);
+  assert(search_selected_source(search) == SEARCH_ALL_SOURCES);
+
+  SourceTree tree = { 0 };
+  assert(source_tree_sync(&tree, search));
+  assert(tree.count == 3 && tree.rows[0].source == SEARCH_ALL_SOURCES);
+  assert(tree.rows[1].source == 0 || tree.rows[2].source == 0);
+  source_tree_destroy(&tree);
+
+  search_select_source(search, 0);
+  wait_for_counts(search, 2, 1);
+  assert(search_selected_source(search) == 0);
+
+  search_request(search, "bravo");
+  wait_for_counts(search, 2, 0);
+  search_select_source(search, 1);
+  wait_for_counts(search, 2, 1);
+  search_select_source(search, 999);
+  assert(search_selected_source(search) == 1);
+
+  for (size_t i = 0; i < 40; i++) search_select_source(search, i % 2);
+
+  search_select_source(search, SEARCH_ALL_SOURCES);
+  search_request(search, "");
+  wait_for_counts(search, 2, 2);
+
+  assert(write(a, "tail", 4) == 4);
+  wait_for_counts(search, 3, 3);
+  assert(write(b, "beta\n", 5) == 5);
+  wait_for_counts(search, 4, 4);
+
+  search_request(search, "tail-done");
+  wait_for_counts(search, 4, 0);
+  assert(write(a, "-done\n", 6) == 6);
+  wait_for_counts(search, 4, 1);
+
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1);
+  assert(record.id == 3 && !strcmp(record.text, "tail-done") && !strcmp(record.source, first));
+
+  search_request(search, "~bravo|beta");
+  wait_for_counts(search, 4, 2);
+  assert(ftruncate(a, 0) == 0 && pwrite(a, "new\n", 4, 0) == 4);
+  wait_for_counts(search, 5, 2);
+  assert(search_status(search).unavailable == 2);
+
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1);
+  assert(record.id == 2 && !strcmp(record.text, "bravo") && !strcmp(record.source, second));
+
+  search_select_source(search, 0);
+  search_request(search, "new");
+  wait_for_counts(search, 5, 1);
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1);
+  assert(!strcmp(record.text, "new"));
+
+  search_close(search);
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  close(a);
+  close(b);
+  unlink(first);
+  unlink(second);
+}
+
 int main(void) {
+  test_multiple_source_search();
+  test_interleaved_sources();
   test_64_bit_offsets();
   test_independent_queries();
+  test_json_chains();
   test_record_transforms();
   test_file_index_and_partial_record();
   test_history_and_superseding_search();

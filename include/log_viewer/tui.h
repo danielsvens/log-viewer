@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include "log_viewer/search.h"
 #include "log_viewer/query.h"
+#include "log_viewer/source_tree.h"
 
 typedef enum { TUI_HEADER = 1, TUI_ERROR, TUI_WARNING, TUI_NORMAL, TUI_MUTED, TUI_STRING, TUI_LITERAL } TuiColor;
 
@@ -14,11 +15,13 @@ typedef enum { OVERLAY_NONE, OVERLAY_DETAIL, OVERLAY_HELP } Overlay;
 typedef struct {
   FILE *tty;
   SCREEN *screen;
-  bool running, editing, pending_g;
+  bool running, editing, pending_g, tree_visible, tree_focus;
+  SourceTree tree;
   Overlay overlay;
   size_t top, horizontal, detail_scroll, detail_horizontal;
   char input[QUERY_CAPACITY], saved_filter[QUERY_CAPACITY];
   char *detail;
+  const char *selected_source;
   RecordReader reader;
   TextBuffer line;
   int io_error;

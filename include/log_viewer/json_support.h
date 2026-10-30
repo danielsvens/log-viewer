@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 typedef struct {
-  void *data;
+  void *data, *root;
   size_t capacity;
   char *serialized;
 } JsonWorkspace;
@@ -17,6 +17,9 @@ typedef struct {
 
 typedef enum { JSON_FIELD_ERROR = -1, JSON_FIELD_MISSING, JSON_FIELD_FOUND } JsonFieldResult;
 
+/* Parse once, then borrow field spans until the next parse or lookup serialization. */
+JsonFieldResult json_workspace_parse(const char *text, size_t length, JsonWorkspace *workspace);
+JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field);
 JsonFieldResult json_read_field_reuse(const char *text, size_t length, const char *path, JsonWorkspace *workspace, JsonFieldSpan *field);
 void json_workspace_destroy(JsonWorkspace *workspace);
 

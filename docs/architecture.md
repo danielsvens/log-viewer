@@ -7,8 +7,10 @@ retention with file-backed line indexing and moves ingestion/search to one worke
 | --- | --- |
 | `main.c`, `options.c` | Locale, arguments, usage, exit status |
 | `app.c` | Start the engine, run the TUI or dump consumer, clean up |
+| `source_set.c` | Expand multiple paths, recursively discover files, deduplicate identities, schedule inputs |
 | `source.c` | Read bounded batches, index line boundaries, spool streams, follow files |
 | `log_store.c` | Own descriptors and paged 16-byte line metadata; buffered random access |
+| `source_tree.c` | Build a sorted source tree with borrowed names and stable file IDs |
 | `search.c` | Worker, query cancellation, ordered result IDs, snapshots, navigation |
 | `query.c` | Prepared AND/text, regex, numeric/JSON comparisons, reusable query scratch |
 | `json_support.c` | Parser limits, reusable parser workspace, nested field lookup, pretty printing |
@@ -29,10 +31,13 @@ third-party parser implementation. Core modules have no ncurses dependency.
 offset and length (excluding the newline). Fixed-size metadata pages avoid a
 large moving allocation during indexing. There is no per-line string allocation,
 fixed record cap, or history eviction. Empty records and a final unterminated
-record are indexed. A provisional final record is replaced/extended when input
-grows; results from that record onward are reevaluated.
+record are indexed. A provisional final record is updated at its stable ID when its source
+grows, even when other sources have appended later records; results from that record onward are reevaluated.
 
-A small segment list maps record ranges to owned descriptors. Regular files are
+A source-generation list owns descriptors and counts its records. A separate
+run table maps monotonically appended record ranges to generation IDs, allowing
+interleaved sources while retaining 16-byte line entries. Runs use two `size_t`
+values each and coalesce consecutive appends from the same generation. Regular files are
 read directly; rotation retains the old descriptor and creates a new segment.
 Non-regular input is appended to an unlinked `mkstemp` file under `TMPDIR` (or
 `/tmp`), using the same line index. Disk/full filesystem and IO failures are
@@ -54,7 +59,15 @@ are not transactional snapshots. `pread` remains memory-safe even in those races
 
 ## Search and synchronization
 
-`Search` owns a worker thread, the source, metadata, and result pages. The worker
+`Search` owns a worker thread, the source set, metadata, and result pages.
+`SourceSet` owns copied paths and independent `LogSource` states. A shared read
+buffer is lent to one source for a poll and then detached. Initial regular-file
+history is drained in argument/sorted directory order; subsequent polling rotates
+across inputs. Recursive rescans discover additions while a device/inode history
+prevents repeated import of rotated files and hard links. Empty directories are
+valid inputs. Directory symlinks and nonregular children are skipped. Dump mode
+expands directories once. Discovery and opens occur under the index mutex; very
+large trees or slow filesystems may delay the UI during a rescan. The worker
 alternates 1 MiB ingestion batches with scans of up to 8,192 records. Queries
 are prepared once per revision. Text uses bounded case-folded substring matching
 with precomputed skip tables; AND conditions short-circuit. Large text records
@@ -63,7 +76,10 @@ can span boundaries. JSON/regex work is not done for text-only queries.
 
 JSON uses the bundled parser's allocation callback to reuse one workspace.
 Scalar field values are borrowed from that workspace, then compared before the
-next parse. Numeric query operands are converted once. Object/array field
+next parse. JSON expressions compile to a bounded tree of conditions with AND/OR nodes,
+AND precedence, and explicit parentheses. Each record is parsed once into the
+reusable workspace; field lookups share that document and boolean evaluation
+short-circuits. Numeric query operands are converted once. Object/array field
 serialization can still allocate, as can a workspace growth operation. Invalid
 JSON and allocation failures are distinguished in the scan path.
 
@@ -94,9 +110,11 @@ within one record are not forcibly interrupted, but do not hold the UI mutex.
   before printing runtime errors.
 - `Search` stops/signals and joins its worker before freeing pages, buffers,
   queries, workspaces, or descriptors. Main code must stop reading before close.
+- `SourceSet` owns input paths, directory roots, identity history, and the shared
+  ingestion buffer. Record source names borrow its paths until search shutdown.
 - `LogSource` owns its input descriptor when opened from a path, borrows stdin,
-  and restores stdin flags. It owns a reusable read buffer and stream spool
-  descriptor. `LogStore` owns separate descriptor references for history.
+  and restores stdin flags. It owns a stream spool descriptor and, when used on its own, a reusable read
+  buffer. Source-set polls borrow the set’s shared buffer instead. `LogStore` owns separate descriptor references for history.
 - `RecordReader` owns its reusable byte buffer. Returned spans are borrowed
   until its next refill/destruction. Location lookup never returns index pointers.
 - `QueryScratch` owns normalization and parser buffers; it is local to one
@@ -133,3 +151,20 @@ truncation, >4 GiB offsets, and existing terminal workflows. `make sanitize`,
 `make threadcheck`, and `make memcheck` cover memory safety, concurrency, and
 allocation balance/failure cleanup. See [performance](performance.md) for the
 separate reproducible 1M/10M measurements and acceptance evidence.
+
+## Source selection
+
+Each input has a stable source ID, copied into all its file generations. The
+search request contains both the expression and a source ID (or all sources).
+Changing either increments the same cancellation revision. Scoped searches skip
+other sources using metadata before reading text; an empty expression also avoids
+raw reads. The all-sources empty-filter fast path retains implicit result IDs.
+A scoped result set uses the existing paged IDs, including unavailable records
+when no expression is applied. Ingestion continues for all sources independently.
+
+The UI owns a source tree whose rows borrow immutable source paths. It rebuilds
+when discovery increases the source count, preserving the cursor by source ID.
+Common directory prefixes are hidden and remaining directories are grouped with
+indented children. Tab changes pane focus; Enter selects scope. Narrow terminals
+show the focused source tree in place of the log pane. The tree is destroyed
+before Search releases its paths.

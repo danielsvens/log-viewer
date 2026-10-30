@@ -1,5 +1,6 @@
 #include "log_viewer/search.h"
 #include "log_viewer/query.h"
+#include "log_viewer/source_set.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -20,8 +21,9 @@ struct Search {
   atomic_bool stop;
   atomic_uint_fast64_t requested;
   uint64_t published;
+  size_t requested_source;
   char expression[QUERY_CAPACITY];
-  LogSource source;
+  SourceSet sources;
   LogStore store;
   size_t **results, result_pages, result_capacity, matches, scanned;
   int error;
@@ -135,7 +137,8 @@ static void *search_worker(void *context) {
   RecordReader reader = { 0 };
 
   uint64_t revision = 0;
-  size_t scanned = 0;
+  size_t scanned = 0, selected_source = SEARCH_ALL_SOURCES;
+  bool unfiltered = false;
 
   while (!atomic_load(&search->stop)) {
     pthread_mutex_lock(&search->mutex);
@@ -145,6 +148,7 @@ static void *search_worker(void *context) {
     if (requested != revision) {
       char expression[QUERY_CAPACITY];
       memcpy(expression, search->expression, sizeof(expression));
+      size_t source = search->requested_source;
 
       pthread_mutex_unlock(&search->mutex);
       query_compile(&query, expression);
@@ -157,16 +161,18 @@ static void *search_worker(void *context) {
         break;
       }
 
+      selected_source = source;
       revision = requested;
       scanned = 0;
 
       search->published = revision;
       search->matches = search->scanned = 0;
-      search->all = query.kind == QUERY_TEXT && !*query.error && !query.term_count;
+      unfiltered = query.kind == QUERY_TEXT && !*query.error && !query.term_count;
+      search->all = selected_source == SEARCH_ALL_SOURCES && unfiltered;
     }
 
     size_t changed;
-    bool ingested = source_poll(&search->source, &search->store, search->follow_file, &changed);
+    bool ingested = source_set_poll(&search->sources, &search->store, search->follow_file, &changed);
 
     if (!ingested) {
       search->error = errno ? errno : EIO;
@@ -181,7 +187,8 @@ static void *search_worker(void *context) {
     }
 
     size_t count = search->store.count;
-    bool idle = changed == SIZE_MAX && scanned == count && revision == atomic_load(&search->requested);
+    bool idle =
+        changed == SIZE_MAX && scanned == count && revision == atomic_load(&search->requested) && search->sources.cycle_complete && !search->sources.loading;
 
     if (search->all || *query.error) {
       search->matches = search->all ? count : 0;
@@ -203,7 +210,11 @@ static void *search_worker(void *context) {
       RecordLocation location;
       log_store_location(&search->store, scanned, &location);
 
-      QueryResult result = match_record(search, revision, &query, location, &reader, &scratch);
+      QueryResult result = QUERY_NO_MATCH;
+
+      if (selected_source == SEARCH_ALL_SOURCES || location.source_id == selected_source) {
+        result = unfiltered ? QUERY_MATCH : match_record(search, revision, &query, location, &reader, &scratch);
+      }
 
       if (result == QUERY_FAILURE) {
         error = errno;
@@ -238,14 +249,14 @@ static void *search_worker(void *context) {
   return nullptr;
 }
 
-SourceOpenResult search_open(Search **output, const char *path, const char *expression, bool follow) {
+SourceOpenResult search_open_paths(Search **output, const char *const *paths, size_t count, const char *expression, bool follow) {
   *output = nullptr;
 
   Search *search = calloc(1, sizeof(*search));
 
   if (!search) return SOURCE_OPEN_ERROR;
 
-  search->source = (LogSource){ .fd = -1, .original_flags = -1, .spool_fd = -1 };
+  search->requested_source = SEARCH_ALL_SOURCES;
   atomic_init(&search->stop, false);
   atomic_init(&search->requested, 1);
 
@@ -266,7 +277,7 @@ SourceOpenResult search_open(Search **output, const char *path, const char *expr
     return SOURCE_OPEN_ERROR;
   }
 
-  SourceOpenResult opened = source_open(&search->source, path);
+  SourceOpenResult opened = source_set_open(&search->sources, paths, count);
 
   if (opened != SOURCE_OPENED) {
     int saved = errno;
@@ -293,6 +304,10 @@ SourceOpenResult search_open(Search **output, const char *path, const char *expr
   return SOURCE_OPENED;
 }
 
+SourceOpenResult search_open(Search **output, const char *path, const char *expression, bool follow) {
+  return search_open_paths(output, &path, path ? 1 : 0, expression, follow);
+}
+
 void search_close(Search *search) {
   if (!search) return;
 
@@ -303,7 +318,7 @@ void search_close(Search *search) {
 
   if (search->started) pthread_join(search->thread, nullptr);
 
-  source_close(&search->source);
+  source_set_close(&search->sources);
   log_store_destroy(&search->store);
 
   for (size_t i = 0; i < search->result_pages; i++) free(search->results[i]);
@@ -326,6 +341,43 @@ void search_request(Search *search, const char *expression) {
   pthread_mutex_unlock(&search->mutex);
 }
 
+size_t search_source_count(Search *search) {
+  pthread_mutex_lock(&search->mutex);
+  size_t count = search->sources.count;
+  pthread_mutex_unlock(&search->mutex);
+
+  return count;
+}
+
+const char *search_source_name(Search *search, size_t source) {
+  pthread_mutex_lock(&search->mutex);
+  const char *name = source < search->sources.count ? search->sources.entries[source].path : nullptr;
+  bool exists = source < search->sources.count;
+  pthread_mutex_unlock(&search->mutex);
+
+  return exists ? (name ? name : "stdin") : nullptr;
+}
+
+size_t search_selected_source(Search *search) {
+  pthread_mutex_lock(&search->mutex);
+  size_t source = search->requested_source;
+  pthread_mutex_unlock(&search->mutex);
+
+  return source;
+}
+
+void search_select_source(Search *search, size_t source) {
+  pthread_mutex_lock(&search->mutex);
+
+  if ((source == SEARCH_ALL_SOURCES || source < search->sources.count) && source != search->requested_source) {
+    search->requested_source = source;
+    atomic_fetch_add(&search->requested, 1);
+    pthread_cond_signal(&search->wake);
+  }
+
+  pthread_mutex_unlock(&search->mutex);
+}
+
 static SearchStatus status_locked(Search *search) {
   bool current = search->published == atomic_load(&search->requested);
 
@@ -334,8 +386,8 @@ static SearchStatus status_locked(Search *search) {
                          .scanned = current ? search->scanned : 0,
                          .unavailable = search->store.unavailable,
                          .revision = search->published,
-                         .eof = search->source.eof,
-                         .searching = !current || search->scanned < search->store.count || (search->source.regular && !search->source.eof),
+                         .eof = search->sources.eof,
+                         .searching = !current || search->scanned < search->store.count || search->sources.loading,
                          .error = search->error };
 }
 
@@ -427,7 +479,7 @@ int search_read_result(Search *search, size_t index, RecordReader *reader, TextB
 
   if (!text_buffer_sanitize(buffer, raw, (size_t)location.length)) return -1;
 
-  *record = (LogRecord){ .id = id + 1, .text = buffer->data };
+  *record = (LogRecord){ .id = id + 1, .text = buffer->data, .source = location.name };
 
   return 1;
 }

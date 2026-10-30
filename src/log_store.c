@@ -19,6 +19,7 @@ void log_store_destroy(LogStore *store) {
 
   free(store->pages);
   free(store->segments);
+  free(store->runs);
 
   *store = (LogStore){ 0 };
 }
@@ -45,6 +46,7 @@ bool log_store_add_file(LogStore *store, int fd, size_t *segment) {
   if (owned < 0) return false;
 
   *segment = store->segment_count++;
+  store->active_segment = *segment;
   store->segments[*segment] = (FileSegment){ .fd = owned, .first = store->count, .available = true };
 
   return true;
@@ -55,13 +57,43 @@ void log_store_invalidate(LogStore *store, size_t segment) {
 
   if (!file->available) return;
 
-  size_t end = segment + 1 < store->segment_count ? store->segments[segment + 1].first : store->count;
-
-  store->unavailable += end - file->first;
+  store->unavailable += file->count;
   file->available = false;
 }
 
+void log_store_select_file(LogStore *store, size_t segment) { store->active_segment = segment; }
+
+void log_store_update(LogStore *store, size_t id, uint64_t offset, uint64_t length) {
+  store->pages[id / INDEX_PAGE_RECORDS][id % INDEX_PAGE_RECORDS] = (LineIndex){ offset, length };
+}
+
+static bool append_run(LogStore *store) {
+  if (store->run_count && store->runs[store->run_count - 1].segment == store->active_segment) return true;
+
+  if (store->run_count == store->run_capacity) {
+    size_t capacity = store->run_capacity ? store->run_capacity * 2 : 16;
+
+    if (capacity > SIZE_MAX / sizeof(RecordRun)) {
+      errno = ENOMEM;
+      return false;
+    }
+
+    RecordRun *runs = realloc(store->runs, capacity * sizeof(*runs));
+
+    if (!runs) return false;
+
+    store->runs = runs;
+    store->run_capacity = capacity;
+  }
+
+  store->runs[store->run_count++] = (RecordRun){ store->count, store->active_segment };
+
+  return true;
+}
+
 bool log_store_append(LogStore *store, uint64_t offset, uint64_t length) {
+  if (!append_run(store)) return false;
+
   size_t page = store->count / INDEX_PAGE_RECORDS;
 
   if (page == store->page_count) {
@@ -90,30 +122,36 @@ bool log_store_append(LogStore *store, uint64_t offset, uint64_t length) {
 
   store->pages[page][store->count % INDEX_PAGE_RECORDS] = (LineIndex){ offset, length };
   store->count++;
+  store->segments[store->active_segment].count++;
 
   return true;
 }
 
 void log_store_pop_tail(LogStore *store) {
-  if (store->count) store->count--;
+  if (!store->count) return;
+
+  store->count--;
+  store->segments[store->runs[store->run_count - 1].segment].count--;
+
+  if (store->runs[store->run_count - 1].first == store->count) store->run_count--;
 }
 
 bool log_store_location(const LogStore *store, size_t id, RecordLocation *location) {
-  if (id >= store->count || !store->segment_count) return false;
+  if (id >= store->count || !store->run_count) return false;
 
-  size_t low = 0, high = store->segment_count;
+  size_t low = 0, high = store->run_count;
 
   while (low + 1 < high) {
     size_t middle = low + (high - low) / 2;
 
-    if (store->segments[middle].first <= id) low = middle;
+    if (store->runs[middle].first <= id) low = middle;
     else high = middle;
   }
 
   LineIndex line = store->pages[id / INDEX_PAGE_RECORDS][id % INDEX_PAGE_RECORDS];
-  FileSegment segment = store->segments[low];
+  FileSegment segment = store->segments[store->runs[low].segment];
 
-  *location = (RecordLocation){ segment.fd, line.offset, line.length, segment.available };
+  *location = (RecordLocation){ segment.fd, line.offset, line.length, segment.available, segment.name, segment.source_id };
 
   return true;
 }
