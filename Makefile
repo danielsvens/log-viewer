@@ -71,6 +71,7 @@ benchmark:
 test: $(BIN) $(TEST_BIN)
 	./$(TEST_BIN)
 	python3 tests/test.py
+	python3 tests/release_test.py
 
 # Override ASAN_OPTIONS=detect_leaks=0 when LeakSanitizer is unavailable under ptrace.
 ASAN_OPTIONS ?= detect_leaks=1
