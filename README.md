@@ -1,7 +1,7 @@
 # log-viewer
 
 A C23 terminal log explorer with file-backed history, background search, syntax
-coloring, and a scrollable JSON detail modal. Inspired by LazyTail.
+coloring, and a scrollable JSON detail modal
 
 ## Build and run
 
