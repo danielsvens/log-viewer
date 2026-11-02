@@ -11,6 +11,27 @@ release_notes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_notes)
 
 
+spec = importlib.util.spec_from_file_location('macos_binary', Path(__file__).resolve().parents[1] / '.github/scripts/check_macos_binary.py')
+macos_binary = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(macos_binary)
+
+
+class MacOSBinaryTests(unittest.TestCase):
+    def test_accepts_only_system_libraries(self):
+        output = ('log-viewer:\n'
+                  '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)\n'
+                  '\t/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0)\n')
+        self.assertEqual(macos_binary.non_system_libraries(output), [])
+
+    def test_rejects_homebrew_and_relative_runtime_dependencies(self):
+        for library in ['/opt/homebrew/opt/ncurses/lib/libncursesw.6.dylib',
+                        '/usr/local/opt/gcc@15/lib/gcc/15/libgcc_s.1.1.dylib',
+                        '@rpath/libncursesw.6.dylib', '@executable_path/lib/libgcc.dylib']:
+            with self.subTest(library=library):
+                output = f'log-viewer:\n\t{library} (compatibility version 1.0.0)\n'
+                self.assertEqual(macos_binary.non_system_libraries(output), [library])
+
+
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

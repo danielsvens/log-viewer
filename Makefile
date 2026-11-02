@@ -12,10 +12,22 @@ CC           := gcc
 BEAR         ?= bear
 CLANG_FORMAT ?= clang-format
 CLANG_TIDY   ?= clang-tidy
+NCURSES_LIBS ?= -lncursesw
+SYSTEM       := $(shell uname -s)
+
+ifeq ($(SYSTEM),Darwin)
+  CC := gcc-15
+  NCURSES_PREFIX ?= $(shell brew --prefix ncurses 2>/dev/null)
+  CPPFLAGS += -D_DARWIN_C_SOURCE
+  ifneq ($(strip $(NCURSES_PREFIX)),)
+    CPPFLAGS += -I$(NCURSES_PREFIX)/include
+    LDFLAGS += -L$(NCURSES_PREFIX)/lib
+  endif
+endif
 
 CPPFLAGS += -Iinclude -D_GNU_SOURCE -D_DEFAULT_SOURCE -D_FILE_OFFSET_BITS=64 -D_XOPEN_SOURCE=700
 CFLAGS   += -std=c23 -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -MMD -MP -pthread
-LDLIBS   += -lncursesw -pthread
+LDLIBS   += $(NCURSES_LIBS) -pthread
 
 ifeq ($(MODE),release)
   CFLAGS += -O2

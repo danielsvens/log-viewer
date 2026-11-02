@@ -3,6 +3,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -132,7 +133,7 @@ static void render_record(const LogRecord *record, int row, int left, int width,
   }
 
   attrset(COLOR_PAIR(TUI_MUTED) | (selected ? A_REVERSE : 0));
-  mvprintw(row, left, "%7lu %c ", record->id, selected ? '>' : ' ');
+  mvprintw(row, left, "%7" PRIu64 " %c ", record->id, selected ? '>' : ' ');
   paint_text(row, left + 10, width - 10, record->text, horizontal, selected);
 }
 

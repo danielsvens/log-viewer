@@ -46,10 +46,79 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  test-and-build-macos:
+    name: Test and build macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          brew install gcc@15 ncurses make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gcc@15)/bin" >> "$GITHUB_PATH"
+
+      - name: Run debug and release tests
+        run: |
+          ncurses_prefix="$(brew --prefix ncurses)"
+          test -f "$ncurses_prefix/lib/libncursesw.a"
+          make --jobs=2 CC=gcc-15 MODE=debug \
+            NCURSES_LIBS="$ncurses_prefix/lib/libncursesw.a" LDFLAGS=-static-libgcc test
+          make --jobs=2 CC=gcc-15 MODE=release \
+            NCURSES_LIBS="$ncurses_prefix/lib/libncursesw.a" LDFLAGS=-static-libgcc test
+
+      - name: Sign and verify standalone binary
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(lipo -archs log-viewer)" = "$EXPECTED_ARCH"
+          codesign --force --sign - --timestamp=none log-viewer
+          codesign --verify --strict --verbose=2 log-viewer
+          python3 .github/scripts/check_macos_binary.py log-viewer
+
+      - name: Test signed binary with system terminal definitions
+        env:
+          TERMINFO: /usr/share/terminfo
+          TERMINFO_DIRS: /usr/share/terminfo
+        run: |
+          ./log-viewer --help
+          python3 tests/test.py
+
+      - name: Stage binary and third-party license
+        run: |
+          mkdir -p build/macos/licenses
+          install -m 755 log-viewer build/macos/log-viewer
+          cp "$(brew --prefix ncurses)/COPYING" build/macos/licenses/ncurses.txt
+
+      - name: Save tested macOS binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}-binary
+          path: build/macos/
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Publish GitHub release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test-and-build
+    needs: [test-and-build, test-and-build-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Keep version selection and publication in one serialized transaction.
@@ -86,28 +155,49 @@ jobs:
             --output "$GITHUB_OUTPUT"
           echo 'publish=true' >> "$GITHUB_OUTPUT"
 
-      - name: Download tested binary
+      - name: Download tested Linux binary
         if: steps.plan.outputs.publish == 'true'
         uses: actions/download-artifact@v8
         with:
           name: linux-x86_64-binary
-          path: build/tested/
+          path: build/tested/linux-x86_64/
+
+      - name: Download tested Apple Silicon binary
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-arm64-binary
+          path: build/tested/macos-arm64/
+
+      - name: Download tested Intel Mac binary
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-x86_64-binary
+          path: build/tested/macos-x86_64/
 
       - name: Package release
         if: steps.plan.outputs.publish == 'true'
         env:
           RELEASE_TAG: ${{ steps.plan.outputs.tag }}
         run: |
-          package="log-viewer-${RELEASE_TAG}-linux-x86_64"
-          mkdir -p "build/package/$package/include" dist
-          install -m 755 build/tested/log-viewer dist/log-viewer-linux-x86_64
-          install -m 755 build/tested/log-viewer "build/package/$package/log-viewer"
-          cp LICENSE README.md "build/package/$package/"
-          cp -R docs "build/package/$package/"
-          cp include/json.h "build/package/$package/include/"
-          tar -C build/package -czf "dist/$package.tar.gz" "$package"
+          mkdir -p dist
+          for platform in linux-x86_64 macos-arm64 macos-x86_64; do
+            package="log-viewer-${RELEASE_TAG}-${platform}"
+            mkdir -p "build/package/$package/include"
+            install -m 755 "build/tested/$platform/log-viewer" "dist/log-viewer-$platform"
+            install -m 755 "build/tested/$platform/log-viewer" "build/package/$package/log-viewer"
+            cp LICENSE README.md "build/package/$package/"
+            cp -R docs "build/package/$package/"
+            cp include/json.h "build/package/$package/include/"
+            if [ -d "build/tested/$platform/licenses" ]; then
+              cp -R "build/tested/$platform/licenses" "build/package/$package/"
+            fi
+            tar -C build/package -czf "dist/$package.tar.gz" "$package"
+          done
+          cp build/tested/macos-arm64/licenses/ncurses.txt dist/NCURSES-LICENSE.txt
           cd dist
-          sha256sum log-viewer-linux-x86_64 "$package.tar.gz" > SHA256SUMS
+          sha256sum log-viewer-* NCURSES-LICENSE.txt > SHA256SUMS
           sha256sum --check SHA256SUMS
 
       - name: Create release and upload binaries

@@ -34,6 +34,18 @@ make CC=gcc-16 MODE=release
 For a debug build with symbols, run `make` or `make MODE=debug`. Use `make clean`
 to remove build output.
 
+On macOS, install the build dependencies with Homebrew:
+
+```sh
+brew install gcc@15 ncurses make
+gmake CC=gcc-15 MODE=release
+```
+
+The macOS release binaries support macOS 15 or newer, with separate downloads for
+Apple Silicon (`macos-arm64`) and Intel (`macos-x86_64`). Extract the `.tar.gz`
+archive and run `./log-viewer app.log` from its folder. Homebrew is not required
+to run these binaries.
+
 ## Run
 
 ```sh
