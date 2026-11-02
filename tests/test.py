@@ -3,6 +3,7 @@ import fcntl
 import os
 import pty
 import select
+import signal
 import struct
 import subprocess
 import tempfile
@@ -58,13 +59,13 @@ finally:
 
 
 class Terminal:
-    def __init__(self, args):
+    def __init__(self, args, *, command=None, rows=28, columns=110):
         self.master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 28, 110, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         def setup():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        self.proc = subprocess.Popen([BIN] + args, stdin=slave, stdout=slave,
+        self.proc = subprocess.Popen(command if command is not None else [BIN] + args, stdin=slave, stdout=slave,
                                      stderr=slave, preexec_fn=setup,
                                      env={**os.environ, 'TERM': 'xterm-256color'})
         os.close(slave)
@@ -74,18 +75,47 @@ class Terminal:
         while time.monotonic() < end:
             if select.select([self.master], [], [], .03)[0]:
                 try:
-                    out += os.read(self.master, 65536)
+                    chunk = os.read(self.master, 65536)
+                    if not chunk:
+                        break
+                    out += chunk
                 except OSError:
                     break
         return out
     def key(self, keys):
         os.write(self.master, keys)
         return self.read()
+    def wait_for(self, expected, timeout=5):
+        output = b''
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            output += self.read(min(.1, max(0, deadline - time.monotonic())))
+            if expected in output:
+                return output
+            if self.proc.poll() is not None:
+                break
+        raise AssertionError(f'Terminal did not display {expected!r}; exit={self.proc.poll()}; output={output[-8192:]!r}')
+
+    def wait_for_exit(self, timeout=5):
+        output = b''
+        deadline = time.monotonic() + timeout
+        while self.proc.poll() is None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.proc.args, timeout, output=output[-8192:])
+            # Drain output while waiting: a full PTY can block rendering or endwin().
+            output = (output + self.read(.05))[-8192:]
+        return self.proc.returncode
+
     def close(self):
-        self.key(b'q')
-        self.proc.wait(timeout=3)
-        assert self.proc.returncode == 0
-        os.close(self.master)
+        try:
+            if self.proc.poll() is None:
+                self.key(b'q')
+            assert self.wait_for_exit() == 0
+        finally:
+            if self.proc.poll() is None:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+                self.proc.wait(timeout=3)
+            os.close(self.master)
 
 with tempfile.TemporaryDirectory() as directory:
     path = os.path.join(directory, 'app.log')
@@ -116,28 +146,29 @@ with tempfile.TemporaryDirectory() as directory:
     t.close()
 
 # Pipeline has separate controlling terminal input, including after producer EOF.
-with tempfile.TemporaryDirectory() as directory:
-    fifo = os.path.join(directory, 'stream')
-    os.mkfifo(fifo)
-    # A shell pipeline reproduces real stdin versus /dev/tty routing.
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
-    def setup():
-        os.setsid()
-        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    proc = subprocess.Popen(['sh', '-c', 'printf \'{"message":"PIPE_LIVE"}\\n\' | "$1"', 'sh', BIN],
-                            stdin=slave, stdout=slave, stderr=slave, preexec_fn=setup,
-                            env={**os.environ, 'TERM': 'xterm-256color'})
-    os.close(slave)
-    time.sleep(.2)
-    output = os.read(master, 65536)
-    assert b'PIPE_LIVE' in output
-    os.write(master, b'\rq')  # detail then close
-    time.sleep(.1)
-    os.write(master, b'q')
-    proc.wait(timeout=3)
-    assert proc.returncode == 0
-    os.close(master)
+pipeline = ['sh', '-c', 'printf \'{"message":"PIPE_LIVE"}\\n\' | "$1"', 'sh', BIN]
+terminal = Terminal([], command=pipeline, rows=24, columns=100)
+try:
+    terminal.wait_for(b'PIPE_LIVE')
+    os.write(terminal.master, b'\r')
+    terminal.wait_for(b'Log detail')
+    os.write(terminal.master, b'q')
+    terminal.wait_for(b'PIPE_LIVE')
+finally:
+    terminal.close()
+
+# A child can emit more than the PTY buffer holds while shutting down.
+# Waiting for exit must keep consuming output rather than block the writer.
+flood = Terminal([], command=['python3', '-u', '-c',
+    'import sys, tty; tty.setcbreak(0); print("DRAIN_READY", flush=True); '
+    'assert sys.stdin.read(1) == "q"; sys.stdout.write("x" * (1024 * 1024)); sys.stdout.flush()'])
+try:
+    flood.wait_for(b'DRAIN_READY')
+    os.write(flood.master, b'q')
+    assert flood.wait_for_exit() == 0
+finally:
+    flood.close()
+
 print('All filtering, JSON, live file, rotation, modal, and pipe tests passed.')
 
 # Giant records cross ingestion/read windows; no 1 MiB truncation is allowed.
@@ -402,3 +433,53 @@ for query in [
 assert run('{"x":1}\n', 'json | ' + ' AND '.join(['x==1'] * 32)).stdout
 assert run('{"x":1}\n', 'json | ' + '(' * 32 + 'x==1' + ')' * 32).stdout
 print('Chained JSON conditions, ~ substring matching, precedence, and syntax errors passed.')
+
+# Status totals stay global while filters and source selection restrict matches.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    import signal
+    root = Path(directory)
+    a, b = root / 'a.log', root / 'b.log'
+    a.write_text('error alpha\ninfo alpha\n')
+    b.write_text('error bravo\ninfo bravo\n')
+    terminal = Terminal([str(root)])
+    width = 110
+
+    def status_screen():
+        global width
+        width = 111 if width == 110 else 110
+        fcntl.ioctl(terminal.master, termios.TIOCSWINSZ, struct.pack('HHHH', 28, width, 0, 0))
+        os.kill(terminal.proc.pid, signal.SIGWINCH)
+        return terminal.read(.35)
+
+    try:
+        screen = terminal.read(.4)
+        assert b'Total indexed: 4' in screen
+        assert b'Matched:' not in screen
+        terminal.key(b'/error\r')
+        screen = status_screen()
+        assert b'Total indexed: 4' in screen and b'Matched: 2' in screen
+        terminal.key(b'\tgj\r\t')
+        screen = status_screen()
+        assert b'Total indexed: 4' in screen and b'Matched: 1' in screen
+
+        # An unmatched append to an unselected source still increases the total.
+        with b.open('a') as file:
+            file.write('background bravo\n')
+        terminal.read(.3)
+        screen = status_screen()
+        assert b'Total indexed: 5' in screen and b'Matched: 1' in screen
+        terminal.key(b'?')
+        screen = status_screen()
+        assert b'Total indexed: 5' in screen and b'Matched: 1' in screen
+        terminal.key(b'q')
+        terminal.key(b'c\ta\t')
+        screen = status_screen()
+        assert b'Total indexed: 5' in screen and b'Matched:' not in screen
+        fcntl.ioctl(terminal.master, termios.TIOCSWINSZ, struct.pack('HHHH', 6, 24, 0, 0))
+        os.kill(terminal.proc.pid, signal.SIGWINCH)
+        screen = terminal.read(.35)
+        assert b'Total: 5' in screen and b'Resize terminal' not in screen
+    finally:
+        terminal.close()
+print('Global indexed totals, filtered matches, source scopes, live updates, and modal status passed.')

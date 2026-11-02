@@ -67,6 +67,9 @@ Choose **All sources**, or press **a** in the tree, to browse everything. The
 current filter stays active when switching sources, and all files keep following
 in the background. Press **s** to show or hide the tree.
 
+The status bar shows the total indexed lines across all sources. When filtering
+or viewing one source, it also shows the number of matching lines.
+
 To print matches without opening the terminal interface:
 
 ```sh

@@ -138,7 +138,7 @@ static void render_record(const LogRecord *record, int row, int left, int width,
 }
 
 static void render_records(Tui *tui, Search *search, const LogView *store, const Query *query, int height, int left, int width) {
-  size_t rows = (size_t)(height - 4);
+  size_t rows = (size_t)(height - 5);
   tui->selected_source = nullptr;
 
   if (store->selected < tui->top) tui->top = store->selected;
@@ -166,9 +166,9 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
 static void render_tree(Tui *tui, Search *search, int height, int width) {
   attrset(COLOR_PAIR(TUI_MUTED) | (tui->tree_focus ? A_BOLD : 0));
   mvaddnstr(1, 1, tui->tree_focus ? "Sources [Tab: logs]" : "Sources [Tab: focus]", width - 2);
-  mvvline(1, width - 1, ACS_VLINE, height - 4);
+  mvvline(1, width - 1, ACS_VLINE, height - 5);
 
-  size_t rows = height > 5 ? (size_t)(height - 5) : 0;
+  size_t rows = height > 6 ? (size_t)(height - 6) : 0;
 
   if (!rows) return;
 
@@ -205,19 +205,41 @@ static void render_tree(Tui *tui, Search *search, int height, int width) {
 
 static void render_footer(const Tui *tui, const Query *query, int height, int width) {
   attrset(COLOR_PAIR(TUI_MUTED));
-  mvhline(height - 3, 0, ACS_HLINE, width);
+  mvhline(height - 4, 0, ACS_HLINE, width);
 
-  if (tui->selected_source) paint_text(height - 3, 1, width - 2, tui->selected_source, 0, false);
-  mvaddnstr(height - 2, 1, (const char *)KEY_HINT_TEXT, width - 2);
+  if (tui->selected_source) paint_text(height - 4, 1, width - 2, tui->selected_source, 0, false);
+  mvaddnstr(height - 3, 1, (const char *)KEY_HINT_TEXT, width - 2);
 
   attrset(COLOR_PAIR(*query->error ? TUI_ERROR : TUI_NORMAL));
-  mvprintw(height - 1, 0, "%c ", tui->editing ? '/' : '>');
+  mvprintw(height - 2, 0, "%c ", tui->editing ? '/' : '>');
   addnstr(tui->editing ? tui->input : query->text, width - 3);
 
   if (*query->error) {
     attrset(COLOR_PAIR(TUI_ERROR));
-    mvaddnstr(height - 3, 1, query->error, width - 2);
+    mvaddnstr(height - 4, 1, query->error, width - 2);
   }
+}
+
+static void render_status(Search *search, const LogView *view, const Query *query, int height, int width) {
+  char text[256];
+  int length = snprintf(text, sizeof(text), width < 44 ? "Total: %zu" : "Total indexed: %zu", view->count);
+
+  bool scoped = search_selected_source(search) != SEARCH_ALL_SOURCES;
+
+  if (*query->text || scoped) {
+    snprintf(text + length, sizeof(text) - (size_t)length, width < 44 ? " | Matched: %zu" : "  |  Matched: %zu", view->matches);
+  }
+
+  size_t used = strlen(text);
+
+  if (view->unavailable) {
+    snprintf(text + used, sizeof(text) - used, "  |  Unavailable: %zu", view->unavailable);
+  }
+
+  attrset(COLOR_PAIR(TUI_HEADER));
+  mvhline(height - 1, 0, ' ', width);
+  mvaddnstr(height - 1, 0, text, width - 1);
+  attrset(A_NORMAL);
 }
 
 static void render_overlay_frame(const Tui *tui, int height, int width) {
@@ -265,7 +287,7 @@ static void render_cursor(const Tui *tui, int height, int width) {
 
   size_t column = strlen(tui->input) + 2;
 
-  move(height - 1, column < (size_t)width ? (int)column : width - 1);
+  move(height - 2, column < (size_t)width ? (int)column : width - 1);
 }
 
 void tui_render(Tui *tui, Search *search, const LogView *store, const Query *query, bool eof) {
@@ -273,8 +295,8 @@ void tui_render(Tui *tui, Search *search, const LogView *store, const Query *que
 
   erase();
 
-  if (height < 5 || width < 24) {
-    mvaddstr(0, 0, "Resize terminal (24x5)");
+  if (height < 6 || width < 24) {
+    mvaddstr(0, 0, "Resize terminal (24x6)");
     refresh();
     return;
   }
@@ -295,6 +317,7 @@ void tui_render(Tui *tui, Search *search, const LogView *store, const Query *que
   if (!tree_only) render_records(tui, search, store, query, height, sidebar, width - sidebar);
   render_footer(tui, query, height, width);
   render_overlay(tui, height, width);
+  render_status(search, store, query, height, width);
 
   render_cursor(tui, height, width);
   refresh();

@@ -13,13 +13,13 @@ static void initialize_colors(void) {
   start_color();
   use_default_colors();
 
-  static constexpr ColorPair COLOR_PAIRS[] = {
+  static constexpr ColorPair TUI_COLOR_PAIRS[] = {
     { TUI_HEADER, COLOR_BLACK, COLOR_CYAN }, { TUI_ERROR, COLOR_RED, -1 },     { TUI_WARNING, COLOR_YELLOW, -1 },  { TUI_NORMAL, COLOR_GREEN, -1 },
     { TUI_MUTED, COLOR_CYAN, -1 },           { TUI_STRING, COLOR_YELLOW, -1 }, { TUI_LITERAL, COLOR_MAGENTA, -1 },
   };
 
-  for (size_t i = 0; i < sizeof(COLOR_PAIRS) / sizeof(*COLOR_PAIRS); i++) {
-    init_pair(COLOR_PAIRS[i].id, COLOR_PAIRS[i].foreground, COLOR_PAIRS[i].background);
+  for (size_t i = 0; i < sizeof(TUI_COLOR_PAIRS) / sizeof(*TUI_COLOR_PAIRS); i++) {
+    init_pair(TUI_COLOR_PAIRS[i].id, TUI_COLOR_PAIRS[i].foreground, TUI_COLOR_PAIRS[i].background);
   }
 }
 
