@@ -196,7 +196,6 @@ jobs:
             install -m 755 "build/tested/$platform/log-viewer" "dist/log-viewer-$platform"
             install -m 755 "build/tested/$platform/log-viewer" "build/package/$package/log-viewer"
             cp LICENSE README.md "build/package/$package/"
-            cp -R docs "build/package/$package/"
             cp include/json.h "build/package/$package/include/"
             if [ -d "build/tested/$platform/licenses" ]; then
               cp -R "build/tested/$platform/licenses" "build/package/$package/"
