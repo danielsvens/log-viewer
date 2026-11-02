@@ -49,7 +49,7 @@ FORMAT_FILES := $(sort $(SRC) $(filter-out include/json.h,$(shell find include -
 
 # ===== Targets =====
 .DEFAULT_GOAL := all
-.PHONY: all clean run test bear format format-check tidy help FORCE benchmark sanitize memcheck threadcheck
+.PHONY: all clean run test tui-test bear format format-check tidy help FORCE benchmark sanitize memcheck threadcheck
 all: $(BIN)
 
 # Relink so switching MODE always selects the corresponding objects.
@@ -84,6 +84,10 @@ test: $(BIN) $(TEST_BIN)
 	./$(TEST_BIN)
 	python3 tests/test.py
 	python3 tests/release_test.py
+
+# Optional terminal interaction checks; excluded from release gates.
+tui-test: $(BIN)
+	python3 tests/tui_test.py
 
 # Override ASAN_OPTIONS=detect_leaks=0 when LeakSanitizer is unavailable under ptrace.
 ASAN_OPTIONS ?= detect_leaks=1
@@ -130,7 +134,8 @@ clean:
 help:
 	@echo "make [MODE=debug|release]       # build (default: debug)"
 	@echo "make run [ARGS=...]             # run the viewer"
-	@echo "make test                      # run integration tests"
+	@echo "make test                      # run core and headless integration tests"
+	@echo "make tui-test                  # run optional terminal interaction tests"
 	@echo "make format                    # format project C sources and headers"
 	@echo "make format-check              # verify project C formatting"
 	@echo "make bear                      # regenerate compile_commands.json"

@@ -524,7 +524,82 @@ static void test_multiple_source_search(void) {
   unlink(second);
 }
 
+static void write_log_file(const char *path, const char *text) {
+  FILE *file = fopen(path, "w");
+
+  assert(file);
+
+  assert(fputs(text, file) >= 0);
+  assert(fclose(file) == 0);
+}
+
+static void test_directory_discovery_and_rotation(void) {
+  char directory[] = "/tmp/log-viewer-discovery-XXXXXX";
+
+  assert(mkdtemp(directory));
+
+  Search *search = nullptr;
+
+  assert(search_open(&search, directory, "error", true) == SOURCE_OPENED);
+  wait_for_counts(search, 0, 0);
+
+  char nested[256], active[256], rotated[256], second[256];
+  snprintf(nested, sizeof(nested), "%s/nested", directory);
+  snprintf(active, sizeof(active), "%s/nested/app.log", directory);
+  snprintf(rotated, sizeof(rotated), "%s/nested/app.log.1", directory);
+  snprintf(second, sizeof(second), "%s/second.log", directory);
+
+  assert(mkdir(nested, 0700) == 0);
+  write_log_file(active, "error partial");
+  wait_for_counts(search, 1, 1);
+
+  search_request(search, "partial-done");
+  wait_for_counts(search, 1, 0);
+
+  FILE *file = fopen(active, "a");
+
+  assert(file);
+  assert(fputs("-done\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 1, 1);
+
+  search_request(search, "error");
+  wait_for_counts(search, 1, 1);
+  assert(rename(active, rotated) == 0);
+  write_log_file(active, "info next\nerror second\n");
+  wait_for_counts(search, 3, 2);
+
+  /* Finding another file requires a rescan that must not reimport the rotated inode. */
+  write_log_file(second, "error third\n");
+  wait_for_counts(search, 4, 3);
+  assert(search_source_count(search) == 2);
+
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1);
+  assert(!strcmp(record.text, "error partial-done"));
+  assert(search_read_result(search, 1, &reader, &buffer, &record, 0) == 1);
+  assert(!strcmp(record.text, "error second"));
+
+  search_select_source(search, 1);
+  wait_for_counts(search, 4, 1);
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1);
+  assert(!strcmp(record.text, "error third"));
+
+  search_close(search);
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+
+  unlink(active);
+  unlink(rotated);
+  unlink(second);
+  rmdir(nested);
+  rmdir(directory);
+}
+
 int main(void) {
+  test_directory_discovery_and_rotation();
   test_multiple_source_search();
   test_interleaved_sources();
   test_64_bit_offsets();

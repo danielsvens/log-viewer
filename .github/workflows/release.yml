@@ -93,10 +93,7 @@ jobs:
           codesign --verify --strict --verbose=2 log-viewer
           python3 .github/scripts/check_macos_binary.py log-viewer
 
-      - name: Test signed binary with system terminal definitions
-        env:
-          TERMINFO: /usr/share/terminfo
-          TERMINFO_DIRS: /usr/share/terminfo
+      - name: Smoke-test signed binary
         run: |
           ./log-viewer --help
           python3 tests/test.py
