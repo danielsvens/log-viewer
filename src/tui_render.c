@@ -317,13 +317,37 @@ static void render_overlay_frame(const Tui *tui, int height, int width) {
   mvvline(1, 2, ACS_VLINE, box_height);
   mvvline(1, width - 3, ACS_VLINE, box_height);
 
-  const char *title = tui->overlay == OVERLAY_HELP ? " Keys & queries " : " Log detail — j/k scroll, h/l pan, q close ";
+  const char *title = tui->overlay == OVERLAY_HELP ? " Keys & queries " : " Log detail — / search, n/N next/prev, y copy, q close ";
 
   mvaddnstr(1, 4, title, box_width - 4);
 }
 
-static void render_overlay(const Tui *tui, int height, int width) {
+static void render_quit_confirmation(int height, int width) {
+  int box_width = width > 54 ? 50 : width - 4;
+  int left = (width - box_width) / 2;
+  int top = (height - 6) / 2;
+
+  attrset(COLOR_PAIR(TUI_NORMAL));
+  for (int row = 0; row < 6; row++) mvhline(top + row, left, ' ', box_width);
+
+  mvhline(top, left, ACS_HLINE, box_width);
+  mvhline(top + 5, left, ACS_HLINE, box_width);
+  mvvline(top, left, ACS_VLINE, 6);
+  mvvline(top, left + box_width - 1, ACS_VLINE, 6);
+
+  mvaddnstr(top, left + 2, " Quit? ", box_width - 4);
+  paint_text(top + 2, left + 2, box_width - 4, "Quit log-viewer?", 0, false, LOG_LEVEL_UNKNOWN);
+  paint_text(top + 3, left + 2, box_width - 4, "y: quit", 0, false, LOG_LEVEL_UNKNOWN);
+  paint_text(top + 4, left + 2, box_width - 4, "n / Esc / Enter: stay", 0, false, LOG_LEVEL_UNKNOWN);
+  attrset(A_NORMAL);
+}
+
+static void render_overlay(Tui *tui, int height, int width) {
   if (tui->overlay == OVERLAY_NONE) return;
+  if (tui->overlay == OVERLAY_QUIT) {
+    render_quit_confirmation(height, width);
+    return;
+  }
 
   const char *text = tui->overlay == OVERLAY_HELP ? (const char *)HELP_TEXT : tui->detail;
   size_t line = 0;
@@ -331,22 +355,39 @@ static void render_overlay(const Tui *tui, int height, int width) {
 
   render_overlay_frame(tui, height, width);
 
-  while (text && *text && row < height - 2) {
+  int bottom = tui->overlay == OVERLAY_DETAIL ? height - 3 : height - 2;
+
+  while (text && *text && row < bottom) {
     const char *end = strchr(text, '\n');
 
     if (line++ >= tui->detail_scroll) {
-      paint_text(row++, 4, width - 8, text, tui->detail_horizontal, false, LOG_LEVEL_UNKNOWN);
+      bool matched = tui->overlay == OVERLAY_DETAIL && tui->detail_match != SIZE_MAX && tui->detail_match >= (size_t)(text - tui->detail) &&
+                     (!end || tui->detail_match < (size_t)(end - tui->detail));
+      paint_text(row++, 4, width - 8, text, tui->detail_horizontal, matched, LOG_LEVEL_UNKNOWN);
     }
 
     if (!end) break;
 
     text = end + 1;
   }
+
+  if (tui->overlay == OVERLAY_DETAIL) {
+    if (tui->detail_searching) {
+      scroll_filter_input(tui, width - 7);
+      mvaddstr(height - 3, 4, "/ ");
+      paint_text(height - 3, 6, width - 10, tui->input + tui->input_scroll, 0, false, LOG_LEVEL_UNKNOWN);
+    } else paint_text(height - 3, 4, width - 8, tui->detail_status, 0, false, LOG_LEVEL_UNKNOWN);
+  }
 }
 
 static void render_cursor(const Tui *tui, int height, int width) {
-  curs_set(tui->editing ? 1 : 0);
+  curs_set(tui->editing || tui->detail_searching ? 1 : 0);
 
+  if (tui->detail_searching) {
+    size_t column = filter_columns(tui->input, tui->input_scroll, tui->input_cursor) + 6;
+    move(height - 3, column < (size_t)(width - 4) ? (int)column : width - 5);
+    return;
+  }
   if (!tui->editing) return;
 
   size_t column = filter_columns(tui->input, tui->input_scroll, tui->input_cursor) + 2;

@@ -106,7 +106,9 @@ alongside file inputs, and `--` before filenames starting with a dash.
 | Esc | Cancel filter editing / close detail |
 | `c` | Clear query; keep level selection |
 | `?` | Help |
-| `q` | Close detail or quit |
+| `q` | Close detail or ask to quit |
+
+Press `y` in the quit dialog to exit; `n`, Esc, or Enter returns to the viewer.
 
 While editing a filter, left/right moves the caret, Home/End jumps to either end,
 and Backspace/Delete removes text. Results stay visible until Enter applies the
@@ -114,6 +116,15 @@ query; Esc discards your edits.
 
 Enter opens the selected record in a scrollable view and pretty-prints valid
 JSON. Use `j/k` to scroll, `h/l` to pan, and `g` to return to the top.
+Inside the inspector, `/` searches for literal text (case-insensitive); Enter jumps
+to the first match and `n` / `N` cycles forward / backward, wrapping at either end.
+Esc cancels search editing without closing the inspector.
+
+Press `y` in the inspector to copy the entire displayed record, including all JSON
+fields, even when they are off screen. On macOS this uses `pbcopy`; on Linux it
+tries `wl-copy`, `xclip`, then `xsel`. Without those tools it sends an OSC 52
+clipboard request to your terminal. Terminal support and clipboard permissions
+may limit that fallback; the inspector reports which method was used.
 
 ## Log levels
 

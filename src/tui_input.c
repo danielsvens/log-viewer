@@ -2,9 +2,14 @@
 #include "log_viewer/json_support.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <wchar.h>
 
 static void apply_filter(Tui *tui, Search *search, Query *query, const char *text) {
   query_compile(query, text);
@@ -19,9 +24,197 @@ static void close_overlay(Tui *tui) {
 
   tui->detail = nullptr;
   tui->overlay = OVERLAY_NONE;
+  tui->detail_searching = false;
+}
+
+extern char **environ;
+
+static bool clipboard_command(FILE *input, const char *const arguments[]) {
+  posix_spawn_file_actions_t actions;
+
+  if (posix_spawn_file_actions_init(&actions)) return false;
+
+  bool ready = posix_spawn_file_actions_adddup2(&actions, fileno(input), STDIN_FILENO) == 0 &&
+               posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) == 0 &&
+               posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0;
+  pid_t child;
+  rewind(input);
+  int error = ready ? posix_spawnp(&child, arguments[0], &actions, nullptr, (char *const *)arguments, environ) : EIO;
+  posix_spawn_file_actions_destroy(&actions);
+
+  if (error) return false;
+
+  int status;
+  pid_t result;
+
+  do {
+    result = waitpid(child, &status, 0);
+  } while (result < 0 && errno == EINTR);
+
+  return result == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool copy_detail(Tui *tui) {
+  if (!tui->detail) return false;
+
+  FILE *input = tmpfile();
+  bool copied = false;
+
+  if (input) {
+    (void)fcntl(fileno(input), F_SETFD, FD_CLOEXEC);
+
+    if (fwrite(tui->detail, 1, strlen(tui->detail), input) == strlen(tui->detail) && fflush(input) == 0) {
+#ifdef __APPLE__
+      const char *const commands[][5] = { { "pbcopy", nullptr } };
+#else
+      const char *const commands[][5] = { { "wl-copy", nullptr },
+                                          { "xclip", "-selection", "clipboard", nullptr },
+                                          { "xsel", "--clipboard", "--input", nullptr } };
+#endif
+      for (size_t i = 0; i < sizeof(commands) / sizeof(*commands) && !copied; i++) copied = clipboard_command(input, commands[i]);
+    }
+
+    fclose(input);
+  }
+
+  if (copied) {
+    snprintf(tui->detail_status, sizeof(tui->detail_status), "Copied entire record to clipboard");
+    return true;
+  }
+  if (!tui->tty) return false;
+
+  static constexpr char BASE64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const unsigned char *text = (const unsigned char *)tui->detail;
+  size_t length = strlen(tui->detail);
+  bool written = fputs("\033]52;c;", tui->tty) >= 0;
+
+  for (size_t i = 0; written && i < length; i += 3) {
+    size_t remaining = length - i;
+    unsigned int value = (unsigned int)text[i] << 16;
+    if (remaining > 1) value |= (unsigned int)text[i + 1] << 8;
+    if (remaining > 2) value |= text[i + 2];
+
+    char encoded[] = {
+      BASE64[value >> 18], BASE64[(value >> 12) & 63], remaining > 1 ? BASE64[(value >> 6) & 63] : '=', remaining > 2 ? BASE64[value & 63] : '='
+    };
+    written = fwrite(encoded, 1, sizeof(encoded), tui->tty) == sizeof(encoded);
+  }
+
+  written = written && fputc('\a', tui->tty) != EOF && fflush(tui->tty) == 0;
+  snprintf(tui->detail_status, sizeof(tui->detail_status), "%s", written ? "Copy sent to terminal clipboard (OSC 52)" : "Clipboard write failed");
+
+  return written;
+}
+
+static void find_detail(Tui *tui, bool backwards, bool first) {
+  if (!tui->detail || !*tui->detail_query) {
+    tui->detail_match = SIZE_MAX;
+    tui->detail_status[0] = 0;
+    return;
+  }
+
+  size_t found = SIZE_MAX, wrap = SIZE_MAX;
+  size_t current = tui->detail_match;
+
+  for (const char *p = tui->detail; (p = strcasestr(p, tui->detail_query)); p++) {
+    size_t offset = (size_t)(p - tui->detail);
+
+    if (backwards) {
+      wrap = offset;
+      if (current == SIZE_MAX || offset < current) found = offset;
+    } else {
+      if (wrap == SIZE_MAX) wrap = offset;
+      if (found == SIZE_MAX && (first || current == SIZE_MAX || offset > current)) found = offset;
+    }
+  }
+
+  tui->detail_match = found != SIZE_MAX ? found : wrap;
+
+  if (tui->detail_match == SIZE_MAX) {
+    snprintf(tui->detail_status, sizeof(tui->detail_status), "No matches");
+    return;
+  }
+
+  tui->detail_scroll = 0;
+  const char *line = tui->detail;
+
+  for (size_t i = 0; i < tui->detail_match; i++) {
+    if (tui->detail[i] == '\n') {
+      tui->detail_scroll++;
+      line = tui->detail + i + 1;
+    }
+  }
+
+  size_t columns = 0;
+  mbstate_t state = { 0 };
+
+  while (line < tui->detail + tui->detail_match) {
+    wchar_t value;
+    size_t bytes = mbrtowc(&value, line, (size_t)(tui->detail + tui->detail_match - line), &state);
+
+    if (bytes == (size_t)-1 || bytes == (size_t)-2 || !bytes) {
+      memset(&state, 0, sizeof(state));
+      bytes = 1;
+      value = L'?';
+    }
+
+    int cells = wcwidth(value);
+    columns += cells < 0 ? 1 : (size_t)cells;
+    line += bytes;
+  }
+
+  tui->detail_horizontal = columns > 8 ? columns - 8 : 0;
+  snprintf(tui->detail_status, sizeof(tui->detail_status), "Match: %.120s (n next, N previous)", tui->detail_query);
+}
+
+static void edit_filter_text(Tui *tui, int key);
+
+static void handle_detail_search(Tui *tui, int key) {
+  if (key == 27) {
+    tui->detail_searching = false;
+    return;
+  }
+  if (key == '\n' || key == KEY_ENTER) {
+    memcpy(tui->detail_query, tui->input, sizeof(tui->detail_query));
+    tui->detail_searching = false;
+    find_detail(tui, false, true);
+    return;
+  }
+
+  edit_filter_text(tui, key);
 }
 
 static void handle_overlay_key(Tui *tui, int key) {
+  if (tui->detail_searching) {
+    handle_detail_search(tui, key);
+    return;
+  }
+
+  if (tui->overlay == OVERLAY_DETAIL && key == '/') {
+    memcpy(tui->input, tui->detail_query, sizeof(tui->input));
+    tui->input_cursor = strlen(tui->input);
+    tui->input_scroll = 0;
+    tui->detail_searching = true;
+    return;
+  }
+  if (tui->overlay == OVERLAY_DETAIL && (key == 'n' || key == 'N')) {
+    find_detail(tui, key == 'N', false);
+    return;
+  }
+  if (tui->overlay == OVERLAY_DETAIL && key == 'y') {
+    if (!copy_detail(tui)) snprintf(tui->detail_status, sizeof(tui->detail_status), "Clipboard unavailable");
+    return;
+  }
+
+  if (tui->overlay == OVERLAY_QUIT) {
+    if (key == 'y' || key == 'Y') {
+      tui->running = false;
+      close_overlay(tui);
+    } else if (key == 27 || key == 'n' || key == 'N' || key == 'q' || key == '\n' || key == KEY_ENTER) close_overlay(tui);
+
+    return;
+  }
+
   if (key == 27 || key == 'q' || key == '\n' || key == KEY_ENTER) {
     close_overlay(tui);
     return;
@@ -206,6 +399,9 @@ static bool open_detail(Tui *tui, Search *search, const LogView *store) {
   if (!detail) return false;
 
   tui->detail = detail;
+  tui->detail_searching = false;
+  tui->detail_query[0] = tui->detail_status[0] = 0;
+  tui->detail_match = SIZE_MAX;
   tui->overlay = OVERLAY_DETAIL;
   tui->detail_scroll = tui->detail_horizontal = 0;
 
@@ -215,7 +411,7 @@ static bool open_detail(Tui *tui, Search *search, const LogView *store) {
 static bool handle_navigation_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
   switch (key) {
   case 'q':
-    tui->running = false;
+    tui->overlay = OVERLAY_QUIT;
     break;
 
   case 'j':

@@ -1,6 +1,7 @@
 #include "log_viewer/tui.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 
 typedef struct {
@@ -29,6 +30,13 @@ bool tui_open(Tui *tui) {
   tui->tty = fopen("/dev/tty", "r+");
 
   if (!tui->tty) return false;
+  if (fcntl(fileno(tui->tty), F_SETFD, FD_CLOEXEC) < 0) {
+    int error = errno;
+    fclose(tui->tty);
+    tui->tty = nullptr;
+    errno = error;
+    return false;
+  }
 
   tui->screen = newterm(nullptr, tui->tty, tui->tty);
 

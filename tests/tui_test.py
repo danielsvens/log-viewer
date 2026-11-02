@@ -64,7 +64,7 @@ class Terminal:
     def close(self):
         try:
             if self.proc.poll() is None:
-                self.key(b'q')
+                self.key(b'qy')
             assert self.wait_for_exit() == 0
         finally:
             if self.proc.poll() is None:
@@ -84,10 +84,19 @@ with tempfile.TemporaryDirectory() as directory:
     t.key(b'gg')
     screen = t.key(b'\r')
     assert b'Log detail' in screen and b'503' in screen, screen
+    assert b'No matches' in t.key(b'/NO_SUCH_DETAIL\r')
+    screen = t.key(b'/\x15timeout\r')
+    assert b'n next, N previous' in screen, screen
+    t.key(b'nN')
+    t.key(b'/\x1b')
+    assert t.proc.poll() is None
     with open(path, 'a') as f:
         f.write('LIVE_NEW_RECORD\n')
     t.read()
     t.key(b'q')
+    assert b'Quit log-viewer?' in t.key(b'q')
+    assert t.proc.poll() is None
+    t.key(b'\r')
     assert b'LIVE_NEW_RECORD' in t.key(b'G')
     assert b'No matching logs' not in t.key(b'/NEVER_MATCH')
     t.key(b'\x1b')

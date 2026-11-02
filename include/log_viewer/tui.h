@@ -10,7 +10,7 @@
 
 typedef enum { TUI_HEADER = 1, TUI_ERROR, TUI_WARNING, TUI_NORMAL, TUI_MUTED, TUI_STRING, TUI_LITERAL } TuiColor;
 
-typedef enum { OVERLAY_NONE, OVERLAY_DETAIL, OVERLAY_HELP } Overlay;
+typedef enum { OVERLAY_NONE, OVERLAY_DETAIL, OVERLAY_HELP, OVERLAY_QUIT } Overlay;
 
 typedef struct {
   FILE *tty;
@@ -22,6 +22,9 @@ typedef struct {
   char input[QUERY_CAPACITY], input_error[160];
   size_t input_cursor, input_scroll;
   char *detail;
+  bool detail_searching;
+  char detail_query[QUERY_CAPACITY], detail_status[160];
+  size_t detail_match;
   const char *selected_source;
   RecordReader reader;
   TextBuffer line;
