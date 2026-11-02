@@ -27,15 +27,15 @@ typedef struct {
   TuiColor base;
 } Syntax;
 
-static TuiColor severity_color(const char *text) {
-  switch (text_log_tone(text)) {
-  case LOG_ERROR:
+static TuiColor severity_color(LogLevel level) {
+  switch (level) {
+  case LOG_LEVEL_ERROR:
     return TUI_ERROR;
 
-  case LOG_WARNING:
+  case LOG_LEVEL_WARN:
     return TUI_WARNING;
 
-  case LOG_DEBUG:
+  case LOG_LEVEL_DEBUG:
     return TUI_MUTED;
 
   default:
@@ -78,13 +78,13 @@ static TuiColor syntax_color(Syntax *syntax, unsigned char byte) {
 }
 
 /* Draw UTF-8 by terminal cells; invalid input is replaced instead of truncating. */
-static void paint_text(int y, int x, int width, const char *text, size_t skip, bool active) {
+static void paint_text(int y, int x, int width, const char *text, size_t skip, bool active, LogLevel level) {
   if (width <= 0) return;
 
   size_t column = 0;
   int used = 0;
   mbstate_t state = { 0 };
-  Syntax syntax = { .base = severity_color(text) };
+  Syntax syntax = { .base = severity_color(level) };
 
   move(y, x);
 
@@ -126,7 +126,7 @@ static void render_header(const LogView *store, bool eof, int width) {
   attrset(A_NORMAL);
 }
 
-static void render_record(const LogRecord *record, int row, int left, int width, size_t horizontal, bool selected) {
+static void render_record(const LogRecord *record, int row, int left, int width, size_t horizontal, bool selected, LogLevel level) {
   if (selected) {
     attrset(A_REVERSE);
     mvhline(row, left, ' ', width);
@@ -134,7 +134,7 @@ static void render_record(const LogRecord *record, int row, int left, int width,
 
   attrset(COLOR_PAIR(TUI_MUTED) | (selected ? A_REVERSE : 0));
   mvprintw(row, left, "%7" PRIu64 " %c ", record->id, selected ? '>' : ' ');
-  paint_text(row, left + 10, width - 10, record->text, horizontal, selected);
+  paint_text(row, left + 10, width - 10, record->text, horizontal, selected, level);
 }
 
 static void render_records(Tui *tui, Search *search, const LogView *store, const Query *query, int height, int left, int width) {
@@ -157,7 +157,14 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
 
     if (index == store->selected) tui->selected_source = record.source;
 
-    render_record(&record, (int)row + 1, left, width, tui->horizontal, index == store->selected);
+    LogLevel level;
+
+    if (!log_level_detect(record.text, tui->line.length, &tui->level_json, &level)) {
+      tui->io_error = errno ? errno : ENOMEM;
+      break;
+    }
+
+    render_record(&record, (int)row + 1, left, width, tui->horizontal, index == store->selected, level);
   }
 
   if (!store->matches) mvaddstr(2, left + 2, *query->error ? "Invalid query" : (store->searching ? "Searching..." : "No matching logs"));
@@ -197,7 +204,7 @@ static void render_tree(Tui *tui, Search *search, int height, int width) {
     memcpy(label, row.name, length);
     label[length] = 0;
 
-    paint_text((int)i + 2, (int)indent, width - (int)indent - 2, label, 0, focused);
+    paint_text((int)i + 2, (int)indent, width - (int)indent - 2, label, 0, focused, LOG_LEVEL_UNKNOWN);
   }
 
   attrset(A_NORMAL);
@@ -207,7 +214,7 @@ static void render_footer(const Tui *tui, const Query *query, int height, int wi
   attrset(COLOR_PAIR(TUI_MUTED));
   mvhline(height - 4, 0, ACS_HLINE, width);
 
-  if (tui->selected_source) paint_text(height - 4, 1, width - 2, tui->selected_source, 0, false);
+  if (tui->selected_source) paint_text(height - 4, 1, width - 2, tui->selected_source, 0, false, LOG_LEVEL_UNKNOWN);
   mvaddnstr(height - 3, 1, (const char *)KEY_HINT_TEXT, width - 2);
 
   attrset(COLOR_PAIR(*query->error ? TUI_ERROR : TUI_NORMAL));
@@ -226,7 +233,9 @@ static void render_status(Search *search, const LogView *view, const Query *quer
 
   bool scoped = search_selected_source(search) != SEARCH_ALL_SOURCES;
 
-  if (*query->text || scoped) {
+  LogLevelMask levels = search_levels(search);
+
+  if (*query->text || scoped || levels != LOG_LEVELS_ALL) {
     snprintf(text + length, sizeof(text) - (size_t)length, width < 44 ? " | Matched: %zu" : "  |  Matched: %zu", view->matches);
   }
 
@@ -234,6 +243,28 @@ static void render_status(Search *search, const LogView *view, const Query *quer
 
   if (view->unavailable) {
     snprintf(text + used, sizeof(text) - used, "  |  Unavailable: %zu", view->unavailable);
+  }
+
+  if (width >= 110) {
+    used = strlen(text);
+    snprintf(text + used, sizeof(text) - used, "  |  Levels:");
+
+    for (unsigned int level = 0; level < LOG_LEVEL_COUNT; level++) {
+      used = strlen(text);
+      snprintf(text + used, sizeof(text) - used, " %u:%s%c", level + 1, log_level_name((LogLevel)level), levels & (1u << level) ? '+' : '-');
+    }
+  } else if (width >= 68) {
+    used = strlen(text);
+    snprintf(
+        text + used,
+        sizeof(text) - used,
+        "  |  Levels: E%c W%c I%c D%c ?%c",
+        levels & (1u << (unsigned int)LOG_LEVEL_ERROR) ? '+' : '-',
+        levels & (1u << (unsigned int)LOG_LEVEL_WARN) ? '+' : '-',
+        levels & (1u << (unsigned int)LOG_LEVEL_INFO) ? '+' : '-',
+        levels & (1u << (unsigned int)LOG_LEVEL_DEBUG) ? '+' : '-',
+        levels & (1u << (unsigned int)LOG_LEVEL_UNKNOWN) ? '+' : '-'
+    );
   }
 
   attrset(COLOR_PAIR(TUI_HEADER));
@@ -271,7 +302,7 @@ static void render_overlay(const Tui *tui, int height, int width) {
     const char *end = strchr(text, '\n');
 
     if (line++ >= tui->detail_scroll) {
-      paint_text(row++, 4, width - 8, text, tui->detail_horizontal, false);
+      paint_text(row++, 4, width - 8, text, tui->detail_horizontal, false, LOG_LEVEL_UNKNOWN);
     }
 
     if (!end) break;

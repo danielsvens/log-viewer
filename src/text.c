@@ -5,7 +5,20 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+
+bool text_ascii_equal(const char *text, size_t length, const char *other) {
+  if (strlen(other) != length) return false;
+
+  for (size_t i = 0; i < length; i++) {
+    unsigned char left = (unsigned char)text[i], right = (unsigned char)other[i];
+
+    if (left >= 'A' && left <= 'Z') left += 'a' - 'A';
+    if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
+    if (left != right) return false;
+  }
+
+  return true;
+}
 
 char *text_copy(const char *text) {
   size_t size = strlen(text) + 1;
@@ -83,12 +96,4 @@ char *text_sanitize(const char *text, size_t length) {
   if (!text_buffer_sanitize(&buffer, text, length)) return nullptr;
 
   return buffer.data;
-}
-
-LogTone text_log_tone(const char *text) {
-  if (strcasestr(text, "error") || strcasestr(text, "fatal") || strcasestr(text, "panic")) return LOG_ERROR;
-  if (strcasestr(text, "warn")) return LOG_WARNING;
-  if (strcasestr(text, "debug") || strcasestr(text, "trace")) return LOG_DEBUG;
-
-  return LOG_NORMAL;
 }

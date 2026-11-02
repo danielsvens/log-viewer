@@ -10,7 +10,7 @@ static constexpr unsigned char USAGE_TEXT[] = {
 const char *options_usage(void) { return (const char *)USAGE_TEXT; }
 
 OptionsResult options_parse(Options *options, int argc, char **argv) {
-  *options = (Options){ .filter = "" };
+  *options = (Options){ .filter = "", .levels = LOG_LEVELS_ALL };
 
   bool positional = false;
 
@@ -21,7 +21,12 @@ OptionsResult options_parse(Options *options, int argc, char **argv) {
 
     if (!positional && !strcmp(argument, "--")) positional = true;
     else if (!positional && !strcmp(argument, "--dump")) options->dump = true;
-    else if (!positional && !strcmp(argument, "--filter") && i + 1 < argc) options->filter = argv[++i];
+    else if (!positional && !strcmp(argument, "--levels")) {
+      if (i + 1 == argc || !log_levels_parse(argv[++i], &options->levels)) {
+        snprintf(options->error, sizeof(options->error), "Expected --levels error,warn,info,debug,unknown (or all/none)");
+        return OPTIONS_ERROR;
+      }
+    } else if (!positional && !strcmp(argument, "--filter") && i + 1 < argc) options->filter = argv[++i];
     else if (positional || argument[0] != '-' || !strcmp(argument, "-")) {
       if (!options->path_count) options->path = argument;
       argv[1 + options->path_count++] = argv[i];

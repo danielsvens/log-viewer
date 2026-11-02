@@ -67,6 +67,7 @@ void tui_close(Tui *tui) {
   source_tree_destroy(&tui->tree);
   record_reader_destroy(&tui->reader);
   text_buffer_destroy(&tui->line);
+  json_workspace_destroy(&tui->level_json);
 
   *tui = (Tui){ 0 };
 }

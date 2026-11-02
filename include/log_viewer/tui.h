@@ -24,6 +24,7 @@ typedef struct {
   const char *selected_source;
   RecordReader reader;
   TextBuffer line;
+  JsonWorkspace level_json;
   int io_error;
 } Tui;
 

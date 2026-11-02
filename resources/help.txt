@@ -4,12 +4,15 @@ j/k or arrows  Move selection
 gg / G         First / last log
 Ctrl-d/u       Half page down / up
 f              Toggle live follow
+1/2/3/4        Toggle error / warn / info / debug
+5              Toggle unclassified lines
+0              Show all levels
 h/l            Horizontal scroll
 /              Edit live filter
 Enter          Inspect record / select source
 a (tree)       Read all sources
 Esc            Cancel filter / close detail
-c              Clear filter
+c              Clear query (levels stay)
 q              Quit / close detail
 
 Filters (case-insensitive text or regex):

@@ -35,3 +35,18 @@ with tempfile.TemporaryDirectory() as directory:
         failed += result.returncode != 0
 assert failed >= 20, 'Directory allocation injection did not exercise enough failure paths'
 print(f'Directory allocation failure cleanup verified ({failed} failures injected).')
+
+# Restricted levels exercise the normalization/parser workspace and composed JSON query.
+failed = 0
+with tempfile.TemporaryDirectory() as directory:
+    path = Path(directory) / 'levels.log'
+    path.write_text('{"level":"error","http":{"status":503}}\n' * 100)
+    for allocation in range(1, 36):
+        result = subprocess.run([sys.argv[1], '--dump', '--levels', 'error', '--filter', 'json | http.status >= 500', str(path)],
+                                env={**os.environ, 'LOG_VIEWER_FAIL_ALLOCATION': str(allocation)},
+                                capture_output=True, timeout=5)
+        assert result.returncode in (0, 1, 2), (allocation, result.stderr)
+        assert b'Unreleased application allocations' not in result.stderr, (allocation, result.stderr)
+        failed += result.returncode != 0
+assert failed >= 10, 'Level filtering allocation injection did not exercise enough failure paths'
+print(f'Level filtering allocation failure cleanup verified ({failed} failures injected).')

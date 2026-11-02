@@ -302,3 +302,41 @@ with tempfile.TemporaryDirectory() as directory:
     finally:
         terminal.close()
 print('Global indexed totals, filtered matches, source scopes, live updates, and modal status passed.')
+
+# Digit toggles change level scope; zero restores the complete history.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    path = Path(directory) / 'levels.log'
+    path.write_text('{"level":"error","message":"alpha"}\n'
+                    '{"level":"warn","message":"beta"}\n'
+                    '{"level":"info","message":"error gamma"}\n'
+                    '{"level":"debug","message":"delta"}\n'
+                    '{"message":"unknown"}\n')
+    terminal = Terminal([str(path)], columns=140)
+    columns = 140
+
+    def level_screen():
+        global columns
+        columns = 141 if columns == 140 else 140
+        fcntl.ioctl(terminal.master, termios.TIOCSWINSZ, struct.pack('HHHH', 28, columns, 0, 0))
+        os.kill(terminal.proc.pid, signal.SIGWINCH)
+        return terminal.read(.3)
+
+    try:
+        assert b'Total indexed: 5' in terminal.wait_for(b'Total indexed: 5')
+        for key, count in [(b'1', 4), (b'2', 3), (b'3', 2), (b'4', 1), (b'5', 0)]:
+            terminal.key(key)
+            screen = level_screen()
+            assert b'Total indexed: 5' in screen and f'Matched: {count}'.encode() in screen, screen
+        terminal.key(b'0')
+        screen = level_screen()
+        assert b'Total indexed: 5' in screen and b'Matched:' not in screen
+        terminal.key(b'3')
+        terminal.key(b'/500\r')  # Query digits must not change the mask.
+        screen = level_screen()
+        assert b'1:error+ 2:warn+ 3:info- 4:debug+ 5:unknown+' in screen
+        terminal.key(b'c')
+        terminal.key(b'0')
+    finally:
+        terminal.close()
+print('Level toggles, unknown visibility, restoring all levels, and query editing passed.')

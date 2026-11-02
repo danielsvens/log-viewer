@@ -2,6 +2,7 @@
 #define LOG_VIEWER_SEARCH_H
 
 #include "log_viewer/source.h"
+#include "log_viewer/log_level.h"
 #include "log_viewer/text.h"
 
 #include <stdint.h>
@@ -27,6 +28,8 @@ SourceOpenResult search_open(Search **search, const char *path, const char *expr
 SourceOpenResult search_open_paths(Search **search, const char *const *paths, size_t count, const char *expression, bool follow);
 void search_close(Search *search);
 void search_request(Search *search, const char *expression);
+LogLevelMask search_levels(Search *search);
+void search_set_levels(Search *search, LogLevelMask levels);
 /* Names are borrowed and remain valid until search_close(), including after discovery. */
 size_t search_source_count(Search *search);
 const char *search_source_name(Search *search, size_t source);

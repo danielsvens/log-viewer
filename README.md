@@ -7,7 +7,7 @@ scrollable detail view.
 - Follow file growth and rotation, or read logs piped from another command.
 - Discover files recursively, including new files added while browsing.
 - Switch between one file and all sources using the file tree.
-- Filter with plain text, regular expressions, or chained JSON conditions.
+- Filter by log level, plain text, regular expressions, or chained JSON conditions.
 - Browse the complete log history without a fixed record limit.
 
 ## Build manually
@@ -56,6 +56,14 @@ my-command 2>&1 | ./log-viewer
 ./log-viewer --filter 'error AND timeout' app.log
 ```
 
+**When piping a command, put `2>&1` before `|` to capture both stdout and stderr.**
+Without it, warnings and errors can print directly over the interface and disrupt
+the display. For example:
+
+```sh
+./gradlew bootRun --args='--spring.profiles.active=local' 2>&1 | ./log-viewer
+```
+
 Directories include hidden and extensionless regular files. Directory symlinks
 and special files are skipped, and overlapping inputs are deduplicated. Use
 uncompressed text logs; binary systemd journals and compressed archives are not
@@ -90,16 +98,44 @@ alongside file inputs, and `--` before filenames starting with a dash.
 | `gg` / `G` | First / last log; `G` resumes follow |
 | `Ctrl-d` / `Ctrl-u`, PageDown / PageUp | Scroll down / up |
 | `f` | Toggle live follow |
+| `1` / `2` / `3` / `4` | Toggle error / warn / info / debug |
+| `5` / `0` | Toggle unclassified / show all levels |
 | `h` / `l`, left / right | Pan horizontally |
 | `/` | Edit a live filter |
 | Enter | Select a source / inspect a record / accept a filter |
 | Esc | Cancel filter editing / close detail |
-| `c` | Clear filter |
+| `c` | Clear query; keep level selection |
 | `?` | Help |
 | `q` | Close detail or quit |
 
 Enter opens the selected record in a scrollable view and pretty-prints valid
 JSON. Use `j/k` to scroll, `h/l` to pan, and `g` to return to the top.
+
+## Log levels
+
+Press **1**, **2**, **3**, or **4** to toggle error, warn, info, or debug lines.
+**5** toggles unclassified lines, and **0** restores all levels. All groups are
+visible initially. The status bar shows enabled (`+`) and hidden (`-`) groups.
+Level selection combines with the current query and selected source; hiding a
+level keeps its history available when you enable it again.
+
+Levels are recognized from JSON fields such as `level`, `severity`, `log.level`,
+and `severityText`, as well as common plain-text prefixes and `level=info` logs.
+Fatal/critical messages belong to error, trace/verbose to debug, and notice to
+info. A message mentioning "error" does not override its explicit INFO level.
+Lines without a recognized level remain in the unclassified group.
+
+To select levels when starting the viewer or printing matches:
+
+```sh
+./log-viewer --levels error,warn app.log
+my-command 2>&1 | ./log-viewer --levels info,debug
+./log-viewer --dump --levels error --filter 'timeout' ./logs/
+```
+
+Use `--levels all` to include everything or `--levels none` to start with every
+group hidden. See the [query guide](docs/queries.md#log-level-selection) for
+recognized fields and numeric level formats.
 
 ## Queries
 

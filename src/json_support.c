@@ -129,12 +129,8 @@ JsonFieldResult json_workspace_parse(const char *text, size_t length, JsonWorksp
   return JSON_FIELD_FOUND;
 }
 
-JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field) {
+static JsonFieldResult field_span(JsonWorkspace *workspace, struct json_value_s *value, JsonFieldSpan *field) {
   *field = (JsonFieldSpan){ 0 };
-
-  if (!workspace->root) return JSON_FIELD_MISSING;
-
-  struct json_value_s *value = find_field(workspace->root, path);
 
   if (!value) return JSON_FIELD_MISSING;
 
@@ -173,6 +169,48 @@ JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path,
   }
 
   return JSON_FIELD_FOUND;
+}
+
+JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field) {
+  struct json_value_s *value = workspace->root ? find_field(workspace->root, path) : nullptr;
+
+  return field_span(workspace, value, field);
+}
+
+static struct json_value_s *find_log_member(struct json_value_s *value, const char *name, size_t length) {
+  char key[128];
+
+  if (length >= sizeof(key)) return nullptr;
+
+  memcpy(key, name, length);
+  key[length] = 0;
+
+  struct json_object_s *object = json_value_as_object(value);
+
+  if (!object) return nullptr;
+
+  for (struct json_object_element_s *element = object->start; element; element = element->next) {
+    if (element->name->string_size == length && text_ascii_equal(element->name->string, length, key)) return element->value;
+  }
+
+  return nullptr;
+}
+
+JsonFieldResult json_workspace_log_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field) {
+  struct json_value_s *value = workspace->root;
+  struct json_value_s *literal = value ? find_log_member(value, path, strlen(path)) : nullptr;
+
+  if (literal) return field_span(workspace, literal, field);
+
+  for (const char *part = path; value && *part;) {
+    const char *end = strchr(part, '.');
+    value = find_log_member(value, part, end ? (size_t)(end - part) : strlen(part));
+
+    if (!end) break;
+    part = end + 1;
+  }
+
+  return field_span(workspace, value, field);
 }
 
 JsonFieldResult json_read_field_reuse(const char *text, size_t length, const char *path, JsonWorkspace *workspace, JsonFieldSpan *field) {

@@ -21,6 +21,8 @@ typedef enum { JSON_FIELD_ERROR = -1, JSON_FIELD_MISSING, JSON_FIELD_FOUND } Jso
 JsonFieldResult json_workspace_parse(const char *text, size_t length, JsonWorkspace *workspace);
 JsonFieldResult json_workspace_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field);
 JsonFieldResult json_read_field_reuse(const char *text, size_t length, const char *path, JsonWorkspace *workspace, JsonFieldSpan *field);
+/* Level metadata accepts case-insensitive keys and literal dotted top-level names. */
+JsonFieldResult json_workspace_log_field(JsonWorkspace *workspace, const char *path, JsonFieldSpan *field);
 void json_workspace_destroy(JsonWorkspace *workspace);
 
 typedef struct {

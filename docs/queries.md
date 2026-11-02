@@ -8,7 +8,7 @@ not SQL, jq, or a shell pipeline.
 
 In the TUI, press `/` and type a query. Results update while you type. Enter
 keeps the filter; Esc restores the previous filter. Press `c` outside the editor
-to clear it. An empty query shows every record in the selected source scope.
+to clear it. An empty query shows every record allowed by the selected source and level filters.
 
 The source tree chooses where to search: one file or **All sources**. Changing
 sources keeps the current query. Searches include the complete indexed history
@@ -166,6 +166,67 @@ of an `OR` may still match. An invalid JSON document never matches the chain.
 Up to **32 conditions** and **32 nested pairs of parentheses** are supported,
 subject to the overall query length limit. Additional pipeline stages, `NOT`,
 and mixing whole-record text conditions into JSON chains are not supported.
+
+## Log-level selection
+
+Level selection is independent of query syntax. Use keys **1–4** for
+error/warn/info/debug, **5** for unknown, and **0** for all levels, or pass
+`--levels error,warn` on the command line. Lists are case-insensitive and may
+include `unknown`; `all` and `none` select every group or no groups. Unknown
+lines are visible by default. A restrictive list includes only its named groups.
+`c` clears the query, while `0` resets the level selection. Query editing accepts
+digit keys normally without toggling levels.
+
+A record must satisfy the source scope, the level selection, and the query.
+All sources continue following and indexing, including hidden levels. The
+status bar's total is global; its matched count reflects all active filters.
+
+JSON metadata keys and level names are ASCII case-insensitive. Supported text
+fields, in priority order, are `level`, `severity`, `log.level`, `log_level`,
+`logLevel`, `lvl`, `log.severity`, `levelname`, `level_name`, `severity_text`,
+`severityText`, and Serilog's `@l`. The first recognized value wins. `log.level`
+and `log.severity` accept either nested objects or literal dotted root keys.
+Unsupported/custom values fall through to the remaining metadata fields.
+
+Recognized names are grouped as follows:
+
+| Group | Names |
+| --- | --- |
+| error | error, err, fatal, critical, crit, panic, alert, emerg, emergency |
+| warn | warn, warning |
+| info | info, information, informational, notice |
+| debug | debug, trace, verbose |
+| unknown | No recognized metadata or prefix |
+
+A JSON message such as `{"level":"INFO","message":"error connecting"}` is
+INFO. A JSON object containing only `{"message":"error connecting"}` is
+unknown; arbitrary message words are not used to infer a structured log's level.
+Invalid JSON-looking records and unsupported numeric codes are also unknown.
+
+Numeric metadata accepts integer values or digit strings:
+
+| Field | Mapping |
+| --- | --- |
+| `level`, `log.level` | Pino/Bunyan: 10/20 debug, 30 info, 40 warn, 50/60 error |
+| `PRIORITY` | Syslog: 0–3 error, 4 warn, 5–6 info, 7 debug |
+| `levelno` | Python logging: 10 debug, 20 info, 30 warn, 40/50 error |
+| `level_value` | Logback: 5000/10000 debug, 20000 info, 30000 warn, 40000 error |
+| `severity_number`, `severityNumber` | OpenTelemetry: 1–8 debug, 9–12 info, 13–16 warn, 17–24 error |
+
+These follow the [Pino level definitions](https://github.com/pinojs/pino/blob/main/docs/api.md),
+[Python logging levels](https://docs.python.org/3/library/logging.html#logging-levels),
+and [OpenTelemetry severity ranges](https://opentelemetry.io/docs/specs/otel/logs/data-model/#severity-fields).
+Unknown numeric encodings are not guessed.
+
+Plain text supports leading `ERROR:`, bracketed `[WARN]`, ISO-style timestamp
+prefixes, and logfmt assignments such as `level=info` or `severity=warn`.
+Detection examines the prefix rather than treating any occurrence of "error"
+in a message as an error level. ANSI color sequences are removed first.
+
+Without level restrictions, indexing and unfiltered browsing retain their fast
+path. Active level filtering inspects complete records, including fields after
+the row preview limit. JSON parsing uses reusable buffers; a very large JSON
+record can require memory proportional to that record.
 
 ## Limits and matching details
 

@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "log_viewer/text.h"
+#include "log_viewer/log_level.h"
 #include "log_viewer/json_support.h"
 
 constexpr int QUERY_CAPACITY = 512;
@@ -66,6 +67,7 @@ typedef struct {
 
 /* Zero-initialize before first use. Compilation also replaces invalid queries. */
 bool query_compile(Query *query, const char *text);
+QueryResult query_match_filtered_span(const Query *query, const char *text, size_t length, QueryScratch *scratch, LogLevelMask levels);
 QueryResult query_match_span(const Query *query, const char *text, size_t length, QueryScratch *scratch);
 /* Streaming text/AND evaluation for giant records; state is reset per record. */
 QueryResult query_match_text_chunk(const Query *query, const char *text, size_t length, QueryStream *stream, QueryScratch *scratch);

@@ -190,3 +190,44 @@ print('Chained JSON conditions, ~ substring matching, precedence, and syntax err
 
 
 print('All headless CLI, input, directory, query, and history tests passed.')
+
+# Level masks recognize metadata instead of message substrings and compose with queries.
+import json
+level_records = [
+    {'id': 1, 'level': 'error', 'message': 'timeout'},
+    {'id': 2, 'severity': 'WARNING', 'message': 'timeout'},
+    {'id': 3, 'level': 'INFO', 'message': 'error timeout'},
+    {'id': 4, 'log': {'level': 'debug'}, 'message': 'timeout'},
+    {'id': 5, 'message': 'error timeout'},
+    {'id': 6, 'PRIORITY': '3', 'message': 'timeout'},
+    {'id': 7, 'severityNumber': 9, 'message': 'timeout'},
+    {'id': 8, 'log.level': 'TRACE', 'message': 'timeout'},
+]
+level_data = ''.join(json.dumps(row) + '\n' for row in level_records)
+for levels, expected in [('all', list(range(1, 9))), ('error', [1, 6]), ('warn', [2]),
+                         ('info', [3, 7]), ('debug', [4, 8]), ('unknown', [5]),
+                         ('error,warn', [1, 2, 6]), ('none', [])]:
+    result = subprocess.run([BIN, '--dump', '--levels', levels], input=level_data,
+                            text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)['id'] for line in result.stdout.splitlines()] == expected, (levels, result.stdout)
+
+for query in ['timeout', '~timeout', 'json | message ~ "timeout" AND id >= 3']:
+    result = subprocess.run([BIN, '--dump', '--levels', 'info', '--filter', query],
+                            input=level_data, text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0 and [json.loads(line)['id'] for line in result.stdout.splitlines()] == [3, 7]
+
+for levels in ['', 'error,', 'error,,warn', 'oops']:
+    result = subprocess.run([BIN, '--dump', '--levels', levels], input='', text=True, capture_output=True)
+    assert result.returncode == 2
+assert subprocess.run([BIN, '--levels'], capture_output=True).returncode == 2
+result = subprocess.run([BIN, '--dump', '--levels', 'error'], input='\x1b[31mERROR\x1b[0m: failed\nINFO error\n',
+                        text=True, capture_output=True)
+assert result.returncode == 0 and result.stdout == 'ERROR: failed\n'
+print('Structured and plain-text level detection, masks, aliases, and query composition passed.')
+
+# Structured levels beyond the viewport preview are still evaluated in full.
+large_level_record = json.dumps({'message': 'x' * (1024 * 1024 + 10) + ' needle', 'severity': 'ERROR'})
+result = subprocess.run([BIN, '--dump', '--levels', 'error', '--filter', 'needle'],
+                        input=large_level_record, text=True, capture_output=True, timeout=10)
+assert result.returncode == 0 and result.stdout == large_level_record + '\n'

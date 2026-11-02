@@ -14,7 +14,8 @@ retention with file-backed line indexing and moves ingestion/search to one worke
 | `search.c` | Worker, query cancellation, ordered result IDs, snapshots, navigation |
 | `query.c` | Prepared AND/text, regex, numeric/JSON comparisons, reusable query scratch |
 | `json_support.c` | Parser limits, reusable parser workspace, nested field lookup, pretty printing |
-| `text.c` | Reusable normalization and existing severity coloring heuristic |
+| `text.c` | Reusable normalization and ASCII comparison |
+| `log_level.c` | Structured metadata, numeric level mappings, plain prefixes, and level masks |
 | `tui.c`, `tui_input.c`, `tui_render.c` | Terminal lifetime, keys, visible rows, modal |
 
 Human-readable help, usage, and key hints live in `resources/*.txt` and are
@@ -168,3 +169,18 @@ Common directory prefixes are hidden and remaining directories are grouped with
 indented children. Tab changes pane focus; Enter selects scope. Narrow terminals
 show the focused source tree in place of the log pane. The tree is destroyed
 before Search releases its paths.
+
+## Log levels
+
+Level masks participate in the same cancellation revision as source and query
+selection. The all-levels empty-query path uses implicit IDs without reading or
+parsing records. Restricted masks classify candidate records in the worker;
+JSON level detection and JSON query conditions share one parsed document and
+reusable workspace. Unknown is a separate group, visible initially. Hiding all
+levels still indexes incoming records without evaluating them.
+
+The UI classifies visible row previews with its own JSON workspace for coloring,
+independent of the worker. Truncated previews that are not complete JSON cannot
+supply structured colors; filtering still examines the complete record. No level
+strings or parsed documents are retained per indexed line. Level filtering of a
+giant record can grow reader and scratch buffers to that record's size.

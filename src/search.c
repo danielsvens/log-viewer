@@ -22,6 +22,7 @@ struct Search {
   atomic_uint_fast64_t requested;
   uint64_t published;
   size_t requested_source;
+  LogLevelMask requested_levels;
   char expression[QUERY_CAPACITY];
   SourceSet sources;
   LogStore store;
@@ -92,14 +93,15 @@ static void wait_for_work(Search *search) {
   pthread_cond_timedwait(&search->wake, &search->mutex, &until);
 }
 
-static QueryResult match_record(Search *search, uint64_t revision, const Query *query, RecordLocation location, RecordReader *reader, QueryScratch *scratch) {
-  if (query->kind != QUERY_TEXT || location.length <= SOURCE_READ_BYTES) {
+static QueryResult
+match_record(Search *search, uint64_t revision, const Query *query, RecordLocation location, RecordReader *reader, QueryScratch *scratch, LogLevelMask levels) {
+  if (levels != LOG_LEVELS_ALL || query->kind != QUERY_TEXT || location.length <= SOURCE_READ_BYTES) {
     const char *text;
     int read = record_reader_get(reader, location, &text);
 
     if (read < 0) return QUERY_FAILURE;
 
-    return read ? query_match_span(query, text, (size_t)location.length, scratch) : QUERY_NO_MATCH;
+    return read ? query_match_filtered_span(query, text, (size_t)location.length, scratch, levels) : QUERY_NO_MATCH;
   }
 
   if (!location.available) return QUERY_NO_MATCH;
@@ -139,6 +141,7 @@ static void *search_worker(void *context) {
   uint64_t revision = 0;
   size_t scanned = 0, selected_source = SEARCH_ALL_SOURCES;
   bool unfiltered = false;
+  LogLevelMask levels = LOG_LEVELS_ALL;
 
   while (!atomic_load(&search->stop)) {
     pthread_mutex_lock(&search->mutex);
@@ -149,6 +152,7 @@ static void *search_worker(void *context) {
       char expression[QUERY_CAPACITY];
       memcpy(expression, search->expression, sizeof(expression));
       size_t source = search->requested_source;
+      LogLevelMask requested_levels = search->requested_levels;
 
       pthread_mutex_unlock(&search->mutex);
       query_compile(&query, expression);
@@ -162,13 +166,14 @@ static void *search_worker(void *context) {
       }
 
       selected_source = source;
+      levels = requested_levels;
       revision = requested;
       scanned = 0;
 
       search->published = revision;
       search->matches = search->scanned = 0;
       unfiltered = query.kind == QUERY_TEXT && !*query.error && !query.term_count;
-      search->all = selected_source == SEARCH_ALL_SOURCES && unfiltered;
+      search->all = selected_source == SEARCH_ALL_SOURCES && unfiltered && levels == LOG_LEVELS_ALL;
     }
 
     size_t changed;
@@ -190,7 +195,7 @@ static void *search_worker(void *context) {
     bool idle =
         changed == SIZE_MAX && scanned == count && revision == atomic_load(&search->requested) && search->sources.cycle_complete && !search->sources.loading;
 
-    if (search->all || *query.error) {
+    if (!levels || search->all || *query.error) {
       search->matches = search->all ? count : 0;
       scanned = count;
       search->scanned = count;
@@ -213,7 +218,7 @@ static void *search_worker(void *context) {
       QueryResult result = QUERY_NO_MATCH;
 
       if (selected_source == SEARCH_ALL_SOURCES || location.source_id == selected_source) {
-        result = unfiltered ? QUERY_MATCH : match_record(search, revision, &query, location, &reader, &scratch);
+        result = unfiltered && levels == LOG_LEVELS_ALL ? QUERY_MATCH : match_record(search, revision, &query, location, &reader, &scratch, levels);
       }
 
       if (result == QUERY_FAILURE) {
@@ -257,6 +262,7 @@ SourceOpenResult search_open_paths(Search **output, const char *const *paths, si
   if (!search) return SOURCE_OPEN_ERROR;
 
   search->requested_source = SEARCH_ALL_SOURCES;
+  search->requested_levels = LOG_LEVELS_ALL;
   atomic_init(&search->stop, false);
   atomic_init(&search->requested, 1);
 
@@ -338,6 +344,27 @@ void search_request(Search *search, const char *expression) {
   atomic_fetch_add(&search->requested, 1);
 
   pthread_cond_signal(&search->wake);
+  pthread_mutex_unlock(&search->mutex);
+}
+
+LogLevelMask search_levels(Search *search) {
+  pthread_mutex_lock(&search->mutex);
+  LogLevelMask levels = search->requested_levels;
+  pthread_mutex_unlock(&search->mutex);
+
+  return levels;
+}
+
+void search_set_levels(Search *search, LogLevelMask levels) {
+  levels &= LOG_LEVELS_ALL;
+  pthread_mutex_lock(&search->mutex);
+
+  if (levels != search->requested_levels) {
+    search->requested_levels = levels;
+    atomic_fetch_add(&search->requested, 1);
+    pthread_cond_signal(&search->wake);
+  }
+
   pthread_mutex_unlock(&search->mutex);
 }
 

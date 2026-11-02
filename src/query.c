@@ -394,10 +394,10 @@ static QueryResult match_json_expression(const Query *query, size_t node, JsonWo
   return match_json_expression(query, expression.right, workspace);
 }
 
-QueryResult query_match_span(const Query *query, const char *text, size_t length, QueryScratch *scratch) {
-  if (*query->error) return QUERY_NO_MATCH;
+QueryResult query_match_filtered_span(const Query *query, const char *text, size_t length, QueryScratch *scratch, LogLevelMask levels) {
+  if (*query->error || !levels) return QUERY_NO_MATCH;
 
-  bool needs_copy = query->kind == QUERY_JSON;
+  bool needs_copy = query->kind == QUERY_JSON || levels != LOG_LEVELS_ALL;
 
   for (size_t i = 0; !needs_copy && i < length; i++) {
     unsigned char byte = (unsigned char)text[i];
@@ -410,6 +410,17 @@ QueryResult query_match_span(const Query *query, const char *text, size_t length
 
     text = scratch->normalized.data;
     length = scratch->normalized.length;
+  }
+
+  bool parsed_json = false;
+
+  if (levels != LOG_LEVELS_ALL) {
+    LogLevel level;
+
+    if (!log_level_detect(text, length, &scratch->json, &level)) return QUERY_FAILURE;
+    if (!(levels & (1u << level))) return QUERY_NO_MATCH;
+
+    parsed_json = scratch->json.root != nullptr;
   }
 
   if (query->kind == QUERY_TEXT) {
@@ -439,11 +450,15 @@ QueryResult query_match_span(const Query *query, const char *text, size_t length
     return result == 0 ? QUERY_MATCH : QUERY_NO_MATCH;
   }
 
-  JsonFieldResult found = json_workspace_parse(text, length, &scratch->json);
+  JsonFieldResult found = parsed_json ? JSON_FIELD_FOUND : json_workspace_parse(text, length, &scratch->json);
 
   if (found == JSON_FIELD_ERROR) return QUERY_FAILURE;
 
   return found == JSON_FIELD_FOUND ? match_json_expression(query, query->root, &scratch->json) : QUERY_NO_MATCH;
+}
+
+QueryResult query_match_span(const Query *query, const char *text, size_t length, QueryScratch *scratch) {
+  return query_match_filtered_span(query, text, length, scratch, LOG_LEVELS_ALL);
 }
 
 bool query_matches(const Query *query, const char *text) {

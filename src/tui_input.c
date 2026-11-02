@@ -269,7 +269,12 @@ bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int 
 
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
   else if (tui->editing) handle_filter_key(tui, search, query, key);
-  else if (key == '\t') {
+  else if (key >= '0' && key <= '5') {
+    LogLevelMask levels = key == '0' ? LOG_LEVELS_ALL : search_levels(search) ^ (1u << (unsigned int)(key - '1'));
+    search_set_levels(search, levels);
+    tui->top = 0;
+    tui->pending_g = false;
+  } else if (key == '\t') {
     tui->tree_visible = true;
     tui->tree_focus = !tui->tree_focus;
     tui->pending_g = false;

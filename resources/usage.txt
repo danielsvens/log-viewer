@@ -1,5 +1,7 @@
-Usage: log-viewer [--filter QUERY] [--dump] [FILE|DIRECTORY|-]...
+Usage: log-viewer [--filter QUERY] [--dump] [--levels LIST] [FILE|DIRECTORY|-]...
 Pipe logs, follow multiple files, or recursively open directories. / filters, Enter details, ? help, q quit.
 --dump prints matching lines without the TUI (until EOF).
 Directories read regular files in sorted traversal order and discover new files.
 -- ends options; use - to include stdin alongside files.
+--levels selects error,warn,info,debug,unknown (comma-separated), or all/none.
+Keys 1-5 toggle those groups; 0 restores all levels.

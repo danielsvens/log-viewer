@@ -105,6 +105,8 @@ int app_run(const Options *options) {
     return opened == SOURCE_INPUT_REQUIRED ? 2 : 1;
   }
 
+  search_set_levels(search, options->levels);
+
   int result = 0;
 
   if (!options->dump && !tui_open(&tui)) result = 1;

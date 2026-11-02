@@ -1,6 +1,7 @@
 #include "log_viewer/json_support.h"
 #include "log_viewer/log_store.h"
 #include "log_viewer/query.h"
+#include "log_viewer/log_level.h"
 #include "log_viewer/source.h"
 #include "log_viewer/search.h"
 #include "log_viewer/source_tree.h"
@@ -13,6 +14,87 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+
+static void test_log_levels(void) {
+  static const struct {
+    const char *text;
+    LogLevel level;
+  } cases[] = { { "{\"level\":\"INFO\",\"message\":\"fatal error warning\"}", LOG_LEVEL_INFO },
+                { "{\"severity\":\"warning\",\"message\":\"fine\"}", LOG_LEVEL_WARN },
+                { "{\"Level\":\"Fatal\"}", LOG_LEVEL_ERROR },
+                { "{\"level\":\"info\",\"severity\":\"error\"}", LOG_LEVEL_INFO },
+                { "{\"log\":{\"level\":\"DEBUG\"}}", LOG_LEVEL_DEBUG },
+                { "{\"log.level\":\"ERROR\"}", LOG_LEVEL_ERROR },
+                { "{\"log_level\":\"trace\"}", LOG_LEVEL_DEBUG },
+                { "{\"severityText\":\"Information\"}", LOG_LEVEL_INFO },
+                { "{\"levelname\":\"CRITICAL\"}", LOG_LEVEL_ERROR },
+                { "{\"@l\":\"Warning\"}", LOG_LEVEL_WARN },
+                { "{\"PRIORITY\":\"3\"}", LOG_LEVEL_ERROR },
+                { "{\"PRIORITY\":4}", LOG_LEVEL_WARN },
+                { "{\"PRIORITY\":6}", LOG_LEVEL_INFO },
+                { "{\"PRIORITY\":7}", LOG_LEVEL_DEBUG },
+                { "{\"PRIORITY\":8}", LOG_LEVEL_UNKNOWN },
+                { "{\"level\":30}", LOG_LEVEL_INFO },
+                { "{\"level\":40}", LOG_LEVEL_WARN },
+                { "{\"level\":60}", LOG_LEVEL_ERROR },
+                { "{\"levelno\":20}", LOG_LEVEL_INFO },
+                { "{\"levelno\":30}", LOG_LEVEL_WARN },
+                { "{\"level_value\":40000}", LOG_LEVEL_ERROR },
+                { "{\"severity_number\":9}", LOG_LEVEL_INFO },
+                { "{\"severityNumber\":17}", LOG_LEVEL_ERROR },
+                { "{\"severityNumber\":0}", LOG_LEVEL_UNKNOWN },
+                { "{\"level\":\"custom\",\"message\":\"ERROR\"}", LOG_LEVEL_UNKNOWN },
+                { "{\"message\":\"fatal error\"}", LOG_LEVEL_UNKNOWN },
+                { "{\"level\":null}", LOG_LEVEL_UNKNOWN },
+                { "[\"ERROR\"]", LOG_LEVEL_UNKNOWN },
+                { "{bad json ERROR", LOG_LEVEL_UNKNOWN },
+                { "[WARN] careful", LOG_LEVEL_WARN },
+                { "debug: detail", LOG_LEVEL_DEBUG },
+                { "2026-11-02 10:12:34.567 INFO ready", LOG_LEVEL_INFO },
+                { "[2026-11-02 10:12:34] ERROR failed", LOG_LEVEL_ERROR },
+                { "ts=2026-11-02 level=info msg=error", LOG_LEVEL_INFO },
+                { "severity: WARN careful", LOG_LEVEL_WARN },
+                { "message=\"level=error\"", LOG_LEVEL_UNKNOWN },
+                { "plain message mentions error and warning", LOG_LEVEL_UNKNOWN },
+                { "500 requests mention ERROR", LOG_LEVEL_UNKNOWN },
+                { "[logger] request mentions ERROR", LOG_LEVEL_UNKNOWN },
+                { "2026-11-02 10:12:34 request mentions ERROR", LOG_LEVEL_UNKNOWN },
+                { "2026-11-02T10:12:34Z [main] INFO ready", LOG_LEVEL_INFO },
+                { "errorish word", LOG_LEVEL_UNKNOWN },
+                { "   ", LOG_LEVEL_UNKNOWN },
+                { "", LOG_LEVEL_UNKNOWN } };
+
+  JsonWorkspace workspace = { 0 };
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+    LogLevel level;
+
+    assert(log_level_detect(cases[i].text, strlen(cases[i].text), &workspace, &level));
+    assert(level == cases[i].level);
+  }
+
+  LogLevelMask mask;
+  assert(log_levels_parse("error,warn", &mask) && mask == ((1u << LOG_LEVEL_ERROR) | (1u << LOG_LEVEL_WARN)));
+  assert(log_levels_parse("info, debug ,unknown", &mask));
+  assert(log_levels_parse("all", &mask) && mask == LOG_LEVELS_ALL);
+  assert(log_levels_parse("none", &mask) && mask == 0);
+  assert(!log_levels_parse("", &mask));
+  assert(!log_levels_parse("error,", &mask));
+  assert(!log_levels_parse("error,,warn", &mask));
+  assert(!log_levels_parse("made-up", &mask));
+
+  Query query = { 0 };
+  QueryScratch scratch = { 0 };
+  const char *record = "{\"level\":\"info\",\"message\":\"error 500\"}";
+
+  assert(query_compile(&query, "json | message ~ \"error\" AND message ~ \"500\""));
+  assert(query_match_filtered_span(&query, record, strlen(record), &scratch, 1u << LOG_LEVEL_INFO) == QUERY_MATCH);
+  assert(query_match_filtered_span(&query, record, strlen(record), &scratch, 1u << LOG_LEVEL_ERROR) == QUERY_NO_MATCH);
+
+  query_destroy(&query);
+  query_scratch_destroy(&scratch);
+  json_workspace_destroy(&workspace);
+}
 
 static void test_independent_queries(void) {
   Query first = { 0 }, second = { 0 };
@@ -598,7 +680,93 @@ static void test_directory_discovery_and_rotation(void) {
   rmdir(directory);
 }
 
+static void test_level_filter_history_and_sources(void) {
+  char first[] = "/tmp/log-viewer-level-a-XXXXXX";
+  char second[] = "/tmp/log-viewer-level-b-XXXXXX";
+  int a = mkstemp(first), b = mkstemp(second);
+
+  assert(a >= 0 && b >= 0);
+  close(a);
+  close(b);
+
+  write_log_file(
+      first,
+      "{\"level\":\"error\",\"message\":\"needle alpha\"}\n"
+      "{\"level\":\"info\",\"message\":\"error needle alpha\"}\n"
+  );
+  write_log_file(
+      second,
+      "{\"severity\":\"warn\",\"message\":\"needle beta\"}\n"
+      "{\"level\":\"debug\",\"message\":\"other beta\"}\n"
+      "{\"message\":\"unknown needle beta\"}\n"
+  );
+
+  const char *paths[] = { first, second };
+  Search *search = nullptr;
+
+  assert(search_open_paths(&search, paths, 2, "", true) == SOURCE_OPENED);
+  wait_for_counts(search, 5, 5);
+  assert(search_levels(search) == LOG_LEVELS_ALL);
+
+  search_set_levels(search, 1u << LOG_LEVEL_ERROR);
+  wait_for_counts(search, 5, 1);
+  search_request(search, "needle");
+  wait_for_counts(search, 5, 1);
+  search_select_source(search, 1);
+  wait_for_counts(search, 5, 0);
+  search_set_levels(search, 1u << LOG_LEVEL_WARN);
+  wait_for_counts(search, 5, 1);
+
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1 && record.id == 3);
+
+  FILE *file = fopen(second, "a");
+
+  assert(file);
+  assert(fputs("{\"level\":\"error\",\"message\":\"needle appended\"}\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 6, 1);
+  search_set_levels(search, 1u << LOG_LEVEL_ERROR);
+  wait_for_counts(search, 6, 1);
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1 && record.id == 6);
+
+  search_set_levels(search, LOG_LEVELS_ALL);
+  wait_for_counts(search, 6, 3);
+  search_select_source(search, SEARCH_ALL_SOURCES);
+  wait_for_counts(search, 6, 5);
+  search_request(search, "");
+  wait_for_counts(search, 6, 6);
+
+  for (size_t i = 0; i < 40; i++) search_set_levels(search, 1u << (i % LOG_LEVEL_COUNT));
+
+  search_set_levels(search, 1u << LOG_LEVEL_ERROR);
+  wait_for_counts(search, 6, 2);
+  search_set_levels(search, 0);
+  wait_for_counts(search, 6, 0);
+
+  file = fopen(second, "a");
+
+  assert(file);
+  assert(fputs("ERROR new while hidden\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 7, 0);
+  search_set_levels(search, LOG_LEVELS_ALL);
+  wait_for_counts(search, 7, 7);
+  search_set_levels(search, 1u << LOG_LEVEL_UNKNOWN);
+  wait_for_counts(search, 7, 1);
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1 && record.id == 5);
+
+  search_close(search);
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  unlink(first);
+  unlink(second);
+}
+
 int main(void) {
+  test_level_filter_history_and_sources();
+  test_log_levels();
   test_directory_discovery_and_rotation();
   test_multiple_source_search();
   test_interleaved_sources();
