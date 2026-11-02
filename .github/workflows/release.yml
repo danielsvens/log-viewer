@@ -85,23 +85,34 @@ jobs:
             NCURSES_LIBS="$ncurses_prefix/lib/libncursesw.a" LDFLAGS=-static-libgcc test
 
       - name: Sign and verify standalone binary
+        working-directory: ${{ runner.temp }}
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
-          test "$(lipo -archs log-viewer)" = "$EXPECTED_ARCH"
-          codesign --force --sign - --timestamp=none log-viewer
-          codesign --verify --strict --verbose=2 log-viewer
-          python3 .github/scripts/check_macos_binary.py log-viewer
+          # A flat bundle heuristic can treat the checkout as the executable's bundle.
+          # Sign a separate file outside that directory, with an unrelated parent name.
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/log-viewer-signing-XXXXXX")"
+          binary="$signing_dir/log-viewer"
+          install -m 755 "$GITHUB_WORKSPACE/log-viewer" "$binary"
+          test "$(lipo -archs "$binary")" = "$EXPECTED_ARCH"
+          codesign --force --sign - --timestamp=none \
+            --identifier io.github.danielsvens.log-viewer "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_macos_binary.py" "$binary"
+          mkdir -p "$GITHUB_WORKSPACE/build/macos"
+          install -m 755 "$binary" "$GITHUB_WORKSPACE/build/macos/log-viewer"
+          cmp "$binary" "$GITHUB_WORKSPACE/build/macos/log-viewer"
 
       - name: Smoke-test signed binary
+        env:
+          LOG_VIEWER_BIN: build/macos/log-viewer
         run: |
-          ./log-viewer --help
+          ./build/macos/log-viewer --help
           python3 tests/test.py
 
-      - name: Stage binary and third-party license
+      - name: Stage third-party license
         run: |
           mkdir -p build/macos/licenses
-          install -m 755 log-viewer build/macos/log-viewer
           cp "$(brew --prefix ncurses)/COPYING" build/macos/licenses/ncurses.txt
 
       - name: Save tested macOS binary
