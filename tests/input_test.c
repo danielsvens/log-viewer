@@ -27,6 +27,70 @@ static void wait_matches(Search *search, size_t expected) {
   assert(!"editor search timed out");
 }
 
+static void test_filter_tabs(Tui *tui, Search *search, LogView *view, Query *query) {
+  constexpr LogLevelMask UNKNOWN_LEVELS = 1u << (unsigned int)LOG_LEVEL_UNKNOWN;
+
+  search_select_source(search, 0);
+  search_set_levels(search, UNKNOWN_LEVELS);
+  wait_matches(search, 1);
+  view->follow = false;
+  view->anchor = 0;
+  tui->top = 7;
+  tui->horizontal = 16;
+
+  key(tui, search, view, query, 't');
+  assert(tui->tab_count == 2 && tui->active_tab == 1 && tui->editing);
+  assert(!*query->text && view->follow);
+  assert(search_selected_source(search) == 0 && search_levels(search) == UNKNOWN_LEVELS);
+  type_text(tui, search, view, query, "json | status >= 200");
+  key(tui, search, view, query, '\n');
+  search_select_source(search, SEARCH_ALL_SOURCES);
+  search_set_levels(search, 0);
+  wait_matches(search, 0);
+
+  key(tui, search, view, query, KEY_SLEFT);
+  assert(tui->active_tab == 0 && query->compiled && !strcmp(query->text, "~503"));
+  assert(!view->follow && tui->horizontal == 16 && tui->restore_top == 7);
+  assert(search_selected_source(search) == 0 && search_levels(search) == UNKNOWN_LEVELS);
+  wait_matches(search, 1);
+
+  key(tui, search, view, query, KEY_SRIGHT);
+  assert(tui->active_tab == 1 && !strcmp(query->text, "json | status >= 200"));
+  assert(search_selected_source(search) == SEARCH_ALL_SOURCES && !search_levels(search));
+  wait_matches(search, 0);
+  search_set_levels(search, LOG_LEVELS_ALL);
+  wait_matches(search, 2);
+
+  key(tui, search, view, query, 't');
+  assert(tui->tab_count == 3 && tui->active_tab == 2 && tui->editing);
+  key(tui, search, view, query, 27);
+  key(tui, search, view, query, 'x');
+  assert(tui->tab_count == 2 && tui->active_tab == 1 && !strcmp(query->text, "json | status >= 200"));
+  wait_matches(search, 2);
+
+  for (size_t i = 0; i < 20; i++) {
+    key(tui, search, view, query, KEY_SRIGHT);
+    key(tui, search, view, query, KEY_SLEFT);
+  }
+
+  assert(tui->active_tab == 1 && !strcmp(query->text, "json | status >= 200"));
+  wait_matches(search, 2);
+  key(tui, search, view, query, 'x');
+  assert(tui->tab_count == 1 && tui->active_tab == 0 && query->compiled && !strcmp(query->text, "~503"));
+  wait_matches(search, 1);
+  uint64_t revision = search_status(search).revision;
+  key(tui, search, view, query, 'x');
+  assert(tui->tab_count == 1 && search_status(search).revision == revision);
+
+  key(tui, search, view, query, 't');
+  assert(tui->tab_count == 2 && tui->tabs[1].id == 4);
+  key(tui, search, view, query, 27);
+  key(tui, search, view, query, 'x');
+  wait_matches(search, 1);
+  search_select_source(search, SEARCH_ALL_SOURCES);
+  search_set_levels(search, LOG_LEVELS_ALL);
+}
+
 int main(void) {
   char path[] = "/tmp/log-viewer-editor-XXXXXX";
   int fd = mkstemp(path);
@@ -130,6 +194,8 @@ int main(void) {
   assert(!tui.editing && query.compiled);
   wait_matches(search, 1);
 
+  test_filter_tabs(&tui, search, &view, &query);
+
   tui.overlay = OVERLAY_DETAIL;
   tui.detail = text_copy("{\n  \"first\": \"Error\",\n  \"second\": \"error\"\n}");
   assert(tui.detail);
@@ -223,10 +289,13 @@ int main(void) {
   key(&tui, search, &view, &query, 'y');
   assert(!tui.running && tui.overlay == OVERLAY_NONE);
 
+  free(tui.tabs);
   query_destroy(&query);
   search_close(search);
   unlink(path);
-  puts("Deferred filter submission, caret editing, UTF-8, invalid drafts, input bounds, inspector search, clipboard, and quit confirmation passed.");
+  puts(
+      "Deferred filter submission, caret editing, UTF-8, invalid drafts, input bounds, inspector search, clipboard, filter tabs, and quit confirmation passed."
+  );
 
   return 0;
 }

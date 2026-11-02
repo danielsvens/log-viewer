@@ -17,6 +17,7 @@ static void apply_filter(Tui *tui, Search *search, Query *query, const char *tex
   search_request(search, query->text);
 
   tui->top = 0;
+  tui->restoring_tab = false;
 }
 
 static void close_overlay(Tui *tui) {
@@ -388,6 +389,90 @@ static void start_filter_edit(Tui *tui, const Query *query) {
   tui->editing = true;
 }
 
+static void save_filter_tab(Tui *tui, Search *search, const LogView *view, const Query *query) {
+  FilterTab *tab = &tui->tabs[tui->active_tab];
+  memcpy(tab->query, query->text, sizeof(tab->query));
+  tab->levels = search_levels(search);
+  tab->source = search_selected_source(search);
+  tab->view = *view;
+
+  tab->top = tui->restoring_tab ? tui->restore_top : tui->top;
+  tab->horizontal = tui->horizontal;
+  tab->tree_cursor = tui->tree.cursor;
+  tab->tree_top = tui->tree.top;
+}
+
+static bool activate_filter_tab(Tui *tui, Search *search, LogView *view, Query *query, size_t index) {
+  FilterTab *tab = &tui->tabs[index];
+
+  if (!query_compile(query, tab->query) && query->allocation_failed) {
+    errno = ENOMEM;
+    return false;
+  }
+
+  search_configure(search, query->text, tab->source, tab->levels);
+  *view = tab->view;
+  tui->active_tab = index;
+  tui->top = tui->restore_top = tab->top;
+  tui->horizontal = tab->horizontal;
+  tui->tree.cursor = tab->tree_cursor;
+  tui->tree.top = tab->tree_top;
+
+  tui->restoring_tab = true;
+  tui->pending_g = false;
+  tui->selected_source = nullptr;
+
+  return true;
+}
+
+static bool handle_tab_key(Tui *tui, Search *search, LogView *view, Query *query, int key) {
+  if (key == 't') {
+    size_t count = tui->tab_count ? tui->tab_count : 1;
+
+    if (count >= SIZE_MAX / sizeof(*tui->tabs)) {
+      errno = ENOMEM;
+      return false;
+    }
+
+    FilterTab *tabs = realloc(tui->tabs, (count + 1) * sizeof(*tabs));
+
+    if (!tabs) return false;
+
+    tui->tabs = tabs;
+
+    if (!tui->tab_count) {
+      tui->tabs[0] = (FilterTab){ .id = 1 };
+      tui->tab_count = 1;
+      tui->next_tab_id = 2;
+    }
+
+    save_filter_tab(tui, search, view, query);
+    tabs[count] =
+        (FilterTab){ .levels = search_levels(search), .source = search_selected_source(search), .view = { .follow = true }, .id = tui->next_tab_id++ };
+    tui->tab_count = count + 1;
+
+    if (!activate_filter_tab(tui, search, view, query, count)) return false;
+
+    start_filter_edit(tui, query);
+    tui->tree_focus = false;
+
+    return true;
+  }
+  if (tui->tab_count < 2) return true;
+
+  save_filter_tab(tui, search, view, query);
+  size_t index = tui->active_tab;
+
+  if (key == 'x') {
+    memmove(tui->tabs + index, tui->tabs + index + 1, (tui->tab_count - index - 1) * sizeof(*tui->tabs));
+    tui->tab_count--;
+    if (index == tui->tab_count) index--;
+  } else if (key == KEY_SRIGHT) index = (index + 1) % tui->tab_count;
+  else index = index ? index - 1 : tui->tab_count - 1;
+
+  return activate_filter_tab(tui, search, view, query, index);
+}
+
 static bool open_detail(Tui *tui, Search *search, const LogView *store) {
   LogRecord record;
   int read = search_read_result(search, store->selected, &tui->reader, &tui->line, &record, 0);
@@ -409,6 +494,10 @@ static bool open_detail(Tui *tui, Search *search, const LogView *store) {
 }
 
 static bool handle_navigation_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
+  if (key == 'j' || key == 'k' || key == 'g' || key == 'G' || key == 'f' || key == KEY_UP || key == KEY_DOWN || key == KEY_HOME || key == KEY_END || key == 4 ||
+      key == 21 || key == KEY_NPAGE || key == KEY_PPAGE)
+    tui->restoring_tab = false;
+
   switch (key) {
   case 'q':
     tui->overlay = OVERLAY_QUIT;
@@ -532,6 +621,7 @@ static void handle_tree_key(Tui *tui, Search *search, LogView *view, int key) {
     if (tree->cursor < tree->count && !tree->rows[tree->cursor].directory) {
       search_select_source(search, tree->rows[tree->cursor].source);
       tui->top = 0;
+      tui->restoring_tab = false;
       view->selected = view->anchor = 0;
       view->follow = true;
       tui->pending_g = false;
@@ -552,10 +642,12 @@ bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int 
 
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
   else if (tui->editing) return handle_filter_key(tui, search, query, key);
+  else if (key == 't' || key == KEY_SLEFT || key == KEY_SRIGHT || key == 'x') return handle_tab_key(tui, search, store, query, key);
   else if (key >= '0' && key <= '5') {
     LogLevelMask levels = key == '0' ? LOG_LEVELS_ALL : search_levels(search) ^ (1u << (unsigned int)(key - '1'));
     search_set_levels(search, levels);
     tui->top = 0;
+    tui->restoring_tab = false;
     tui->pending_g = false;
   } else if (key == '\t') {
     tui->tree_visible = true;

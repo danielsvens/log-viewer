@@ -52,6 +52,8 @@ bool tui_open(Tui *tui) {
   noecho();
 
   keypad(stdscr, TRUE);
+  define_key("\033[1;2D", KEY_SLEFT);
+  define_key("\033[1;2C", KEY_SRIGHT);
   timeout(50);
   set_escdelay(25);
 
@@ -72,6 +74,7 @@ void tui_close(Tui *tui) {
   if (tui->tty) fclose(tui->tty);
 
   free(tui->detail);
+  free(tui->tabs);
   source_tree_destroy(&tui->tree);
   record_reader_destroy(&tui->reader);
   text_buffer_destroy(&tui->line);

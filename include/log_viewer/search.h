@@ -28,6 +28,8 @@ SourceOpenResult search_open(Search **search, const char *path, const char *expr
 SourceOpenResult search_open_paths(Search **search, const char *const *paths, size_t count, const char *expression, bool follow);
 void search_close(Search *search);
 void search_request(Search *search, const char *expression);
+/* Replace query, source, and levels together, cancelling the previous search. */
+void search_configure(Search *search, const char *expression, size_t source, LogLevelMask levels);
 LogLevelMask search_levels(Search *search);
 void search_set_levels(Search *search, LogLevelMask levels);
 /* Names are borrowed and remain valid until search_close(), including after discovery. */

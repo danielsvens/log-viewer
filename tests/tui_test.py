@@ -351,3 +351,39 @@ with tempfile.TemporaryDirectory() as directory:
     finally:
         terminal.close()
 print('Level toggles, unknown visibility, restoring all levels, and query editing passed.')
+
+# Tabs share live inputs while keeping separate queries and results.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    path = Path(directory) / 'tabs.log'
+    path.write_text('{"level":"info","message":"alpha"}\n{"level":"error","message":"bravo"}\n')
+    terminal = Terminal(['--filter', '~info', str(path)])
+    columns = 110
+
+    def tab_screen(width=None):
+        global columns
+        columns = width if width is not None else (111 if columns == 110 else 110)
+        fcntl.ioctl(terminal.master, termios.TIOCSWINSZ, struct.pack('HHHH', 28, columns, 0, 0))
+        os.kill(terminal.proc.pid, signal.SIGWINCH)
+        return terminal.read(.35)
+
+    try:
+        terminal.wait_for(b'alpha')
+        terminal.key(b'tjson | level == "error"\r')
+        screen = tab_screen()
+        assert b'Tabs 2/2' in screen and b'bravo' in screen and b'Matched: 1' in screen, screen
+        with path.open('a') as stream:
+            stream.write('{"level":"info","message":"charlie"}\n')
+        terminal.read(.5)
+        terminal.key(b'\x1b[1;2D')
+        screen = tab_screen()
+        assert b'Tabs 1/2' in screen and b'charlie' in screen and b'Matched: 2' in screen, screen
+        terminal.key(b'\x1b[1;2C')
+        screen = tab_screen(24)
+        assert b'Tabs 2/2' in screen, screen
+        terminal.key(b'x')
+        screen = tab_screen(110)
+        assert b'Tabs 1/1' in screen and b'charlie' in screen and b'Matched: 2' in screen, screen
+    finally:
+        terminal.close()
+print('Filter tabs, shared live indexing, switching, closure, and narrow tab bars passed.')

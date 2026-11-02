@@ -1,1 +1,1 @@
-Tab sources/logs  s tree  1-5 levels 0 all  j/k move  / filter  Enter detail/select  ? help  q quit
+t new tab  Shift-arrows tabs  x close tab  Tab sources/logs  / filter  Enter inspect  ? help  q quit

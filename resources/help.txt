@@ -8,6 +8,9 @@ f              Toggle live follow
 5              Toggle unclassified lines
 0              Show all levels
 h/l            Horizontal scroll
+t              New filter tab
+Shift-Left/Right Previous / next tab
+x              Close tab (keep one)
 /              Edit filter (Enter applies)
 Enter          Inspect / select / apply filter
 a (tree)       Read all sources

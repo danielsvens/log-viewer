@@ -347,6 +347,18 @@ void search_request(Search *search, const char *expression) {
   pthread_mutex_unlock(&search->mutex);
 }
 
+void search_configure(Search *search, const char *expression, size_t source, LogLevelMask levels) {
+  pthread_mutex_lock(&search->mutex);
+
+  snprintf(search->expression, sizeof(search->expression), "%s", expression);
+  search->requested_source = source == SEARCH_ALL_SOURCES || source < search->sources.count ? source : SEARCH_ALL_SOURCES;
+  search->requested_levels = levels & LOG_LEVELS_ALL;
+  atomic_fetch_add(&search->requested, 1);
+
+  pthread_cond_signal(&search->wake);
+  pthread_mutex_unlock(&search->mutex);
+}
+
 LogLevelMask search_levels(Search *search) {
   pthread_mutex_lock(&search->mutex);
   LogLevelMask levels = search->requested_levels;

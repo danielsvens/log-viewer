@@ -141,6 +141,16 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
   size_t rows = (size_t)(height - 5);
   tui->selected_source = nullptr;
 
+  if (tui->restoring_tab) {
+    if (store->searching) {
+      mvaddstr(2, left + 2, "Searching...");
+      return;
+    }
+
+    tui->top = tui->restore_top;
+    tui->restoring_tab = false;
+  }
+
   if (store->selected < tui->top) tui->top = store->selected;
   if (store->selected >= tui->top + rows) tui->top = store->selected - rows + 1;
 
@@ -239,11 +249,37 @@ static void scroll_filter_input(Tui *tui, int width) {
   }
 }
 
+static void render_filter_tabs(const Tui *tui, const Query *query, int row, int width) {
+  size_t count = tui->tab_count ? tui->tab_count : 1;
+  size_t visible = width > 36 ? (size_t)(width - 12) / 24 : 1;
+  if (visible > count) visible = count;
+
+  size_t first = tui->active_tab / visible * visible;
+  int slot = (width - 12) / (int)visible;
+  attrset(COLOR_PAIR(TUI_MUTED));
+  mvprintw(row, 0, "Tabs %zu/%zu", tui->active_tab + 1, count);
+
+  for (size_t i = first; i < count && i < first + visible; i++) {
+    bool active = i == tui->active_tab;
+    const char *expression = active ? query->text : tui->tabs[i].query;
+    size_t id = tui->tab_count ? tui->tabs[i].id : 1;
+    char label[QUERY_CAPACITY + 32];
+    snprintf(label, sizeof(label), "%zu: %s", id, *expression ? expression : "All logs");
+    int left = 12 + (int)(i - first) * slot;
+
+    attrset(COLOR_PAIR(TUI_MUTED) | (active ? A_REVERSE : 0));
+    mvhline(row, left, ' ', slot - 1);
+    paint_text(row, left, slot - 1, label, 0, active, LOG_LEVEL_UNKNOWN);
+  }
+
+  attrset(A_NORMAL);
+}
+
 static void render_footer(Tui *tui, const Query *query, int height, int width) {
   attrset(COLOR_PAIR(TUI_MUTED));
   mvhline(height - 4, 0, ACS_HLINE, width);
 
-  if (tui->selected_source) paint_text(height - 4, 1, width - 2, tui->selected_source, 0, false, LOG_LEVEL_UNKNOWN);
+  render_filter_tabs(tui, query, height - 4, width);
   mvaddnstr(height - 3, 1, (const char *)KEY_HINT_TEXT, width - 2);
 
   const char *error = tui->editing ? tui->input_error : query->error;

@@ -13,10 +13,20 @@ typedef enum { TUI_HEADER = 1, TUI_ERROR, TUI_WARNING, TUI_NORMAL, TUI_MUTED, TU
 typedef enum { OVERLAY_NONE, OVERLAY_DETAIL, OVERLAY_HELP, OVERLAY_QUIT } Overlay;
 
 typedef struct {
+  char query[QUERY_CAPACITY];
+  LogLevelMask levels;
+  size_t source, top, horizontal, tree_cursor, tree_top, id;
+  LogView view;
+} FilterTab;
+
+typedef struct {
   FILE *tty;
   SCREEN *screen;
   bool running, editing, pending_g, tree_visible, tree_focus;
   SourceTree tree;
+  FilterTab *tabs;
+  size_t tab_count, active_tab, next_tab_id, restore_top;
+  bool restoring_tab;
   Overlay overlay;
   size_t top, horizontal, detail_scroll, detail_horizontal;
   char input[QUERY_CAPACITY], input_error[160];

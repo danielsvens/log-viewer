@@ -102,11 +102,24 @@ alongside file inputs, and `--` before filenames starting with a dash.
 | `5` / `0` | Toggle unclassified / show all levels |
 | `h` / `l`, left / right | Pan horizontally |
 | `/` | Edit a filter; Enter applies it |
+| `t` | Open a new filter tab |
+| Shift+Left / Shift+Right | Previous / next filter tab |
+| `x` | Close the current tab (keeps at least one) |
 | Enter | Select a source / inspect a record / accept a filter |
 | Esc | Cancel filter editing / close detail |
 | `c` | Clear query; keep level selection |
 | `?` | Help |
 | `q` | Close detail or ask to quit |
+
+Filter tabs let you keep several queries open over the same inputs. Press `t` to
+open a new tab and type its query, then Enter to run it. New tabs inherit the
+current source and level selection. Each tab remembers its query, source, levels,
+scroll position, and follow setting. Switch with Shift+Left / Shift+Right; the active tab appears
+in the tab bar above the filter editor. Tabs last for the current session.
+
+All tabs share the indexed logs. Only the active tab searches, so opening tabs
+does not duplicate log data or add background searches. Switching reruns that
+tab’s query and may briefly show “Searching…” on large inputs.
 
 Press `y` in the quit dialog to exit; `n`, Esc, or Enter returns to the viewer.
 
