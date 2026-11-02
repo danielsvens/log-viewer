@@ -19,7 +19,8 @@ typedef struct {
   SourceTree tree;
   Overlay overlay;
   size_t top, horizontal, detail_scroll, detail_horizontal;
-  char input[QUERY_CAPACITY], saved_filter[QUERY_CAPACITY];
+  char input[QUERY_CAPACITY], input_error[160];
+  size_t input_cursor, input_scroll;
   char *detail;
   const char *selected_source;
   RecordReader reader;

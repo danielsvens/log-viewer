@@ -8,12 +8,16 @@ f              Toggle live follow
 5              Toggle unclassified lines
 0              Show all levels
 h/l            Horizontal scroll
-/              Edit live filter
-Enter          Inspect record / select source
+/              Edit filter (Enter applies)
+Enter          Inspect / select / apply filter
 a (tree)       Read all sources
 Esc            Cancel filter / close detail
 c              Clear query (levels stay)
 q              Quit / close detail
+
+Filter editor: arrows move caret, Home/End jump,
+Backspace/Delete erase. Esc discards edits.
+Results change only when a valid query is submitted.
 
 Filters (case-insensitive text or regex):
 connection refused

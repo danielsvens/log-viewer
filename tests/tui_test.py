@@ -89,8 +89,10 @@ with tempfile.TemporaryDirectory() as directory:
     t.read()
     t.key(b'q')
     assert b'LIVE_NEW_RECORD' in t.key(b'G')
-    assert b'No matching logs' in t.key(b'/NEVER_MATCH')
-    assert b'LIVE_NEW_RECORD' in t.key(b'\x1b')
+    assert b'No matching logs' not in t.key(b'/NEVER_MATCH')
+    t.key(b'\x1b')
+    assert b'No matching logs' in t.key(b'/NEVER_MATCH\r')
+    assert b'LIVE_NEW_RECORD' in t.key(b'c')
     os.rename(path, path + '.old')
     with open(path, 'w') as f:
         f.write('ROTATED_RECORD\n')

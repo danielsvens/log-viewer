@@ -6,9 +6,11 @@ not SQL, jq, or a shell pipeline.
 
 ## Entering a query
 
-In the TUI, press `/` and type a query. Results update while you type. Enter
-keeps the filter; Esc restores the previous filter. Press `c` outside the editor
-to clear it. An empty query shows every record allowed by the selected source and level filters.
+In the TUI, press `/` and edit a query. The current results stay visible until
+you press Enter to run the new query. Esc discards the draft. Invalid queries
+show an error and leave the current filter active. Use left/right arrows to move
+the caret, Home/End to jump to either end, and Backspace/Delete to remove text.
+Press `c` outside the editor to clear the query. An empty query shows every record allowed by the selected source and level filters.
 
 The source tree chooses where to search: one file or **All sources**. Changing
 sources keeps the current query. Searches include the complete indexed history

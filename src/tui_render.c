@@ -210,20 +210,53 @@ static void render_tree(Tui *tui, Search *search, int height, int width) {
   attrset(A_NORMAL);
 }
 
-static void render_footer(const Tui *tui, const Query *query, int height, int width) {
+static size_t filter_columns(const char *text, size_t start, size_t end) {
+  size_t columns = 0;
+  mbstate_t state = { 0 };
+
+  while (start < end) {
+    Glyph glyph = read_glyph(text + start, &state);
+
+    if (!glyph.bytes || glyph.bytes > end - start) break;
+
+    columns += (size_t)glyph.cells;
+    start += glyph.bytes;
+  }
+
+  return columns;
+}
+
+static void scroll_filter_input(Tui *tui, int width) {
+  size_t available = (size_t)(width - 3);
+  size_t columns = filter_columns(tui->input, 0, tui->input_cursor);
+  mbstate_t state = { 0 };
+  tui->input_scroll = 0;
+
+  while (columns >= available && tui->input_scroll < tui->input_cursor) {
+    Glyph glyph = read_glyph(tui->input + tui->input_scroll, &state);
+    columns -= (size_t)glyph.cells;
+    tui->input_scroll += glyph.bytes;
+  }
+}
+
+static void render_footer(Tui *tui, const Query *query, int height, int width) {
   attrset(COLOR_PAIR(TUI_MUTED));
   mvhline(height - 4, 0, ACS_HLINE, width);
 
   if (tui->selected_source) paint_text(height - 4, 1, width - 2, tui->selected_source, 0, false, LOG_LEVEL_UNKNOWN);
   mvaddnstr(height - 3, 1, (const char *)KEY_HINT_TEXT, width - 2);
 
-  attrset(COLOR_PAIR(*query->error ? TUI_ERROR : TUI_NORMAL));
-  mvprintw(height - 2, 0, "%c ", tui->editing ? '/' : '>');
-  addnstr(tui->editing ? tui->input : query->text, width - 3);
+  const char *error = tui->editing ? tui->input_error : query->error;
 
-  if (*query->error) {
+  if (tui->editing) scroll_filter_input(tui, width);
+
+  attrset(COLOR_PAIR(*error ? TUI_ERROR : TUI_NORMAL));
+  mvprintw(height - 2, 0, "%c ", tui->editing ? '/' : '>');
+  paint_text(height - 2, 2, width - 3, tui->editing ? tui->input + tui->input_scroll : query->text, 0, false, LOG_LEVEL_UNKNOWN);
+
+  if (*error) {
     attrset(COLOR_PAIR(TUI_ERROR));
-    mvaddnstr(height - 4, 1, query->error, width - 2);
+    mvaddnstr(height - 4, 1, error, width - 2);
   }
 }
 
@@ -316,7 +349,7 @@ static void render_cursor(const Tui *tui, int height, int width) {
 
   if (!tui->editing) return;
 
-  size_t column = strlen(tui->input) + 2;
+  size_t column = filter_columns(tui->input, tui->input_scroll, tui->input_cursor) + 2;
 
   move(height - 2, column < (size_t)width ? (int)column : width - 1);
 }

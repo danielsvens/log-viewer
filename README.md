@@ -101,12 +101,16 @@ alongside file inputs, and `--` before filenames starting with a dash.
 | `1` / `2` / `3` / `4` | Toggle error / warn / info / debug |
 | `5` / `0` | Toggle unclassified / show all levels |
 | `h` / `l`, left / right | Pan horizontally |
-| `/` | Edit a live filter |
+| `/` | Edit a filter; Enter applies it |
 | Enter | Select a source / inspect a record / accept a filter |
 | Esc | Cancel filter editing / close detail |
 | `c` | Clear query; keep level selection |
 | `?` | Help |
 | `q` | Close detail or quit |
+
+While editing a filter, left/right moves the caret, Home/End jumps to either end,
+and Backspace/Delete removes text. Results stay visible until Enter applies the
+query; Esc discards your edits.
 
 Enter opens the selected record in a scrollable view and pretty-prints valid
 JSON. Use `j/k` to scroll, `h/l` to pan, and `g` to return to the top.

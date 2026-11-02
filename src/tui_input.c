@@ -1,6 +1,8 @@
 #include "log_viewer/tui.h"
 #include "log_viewer/json_support.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -67,43 +69,128 @@ static void handle_overlay_key(Tui *tui, int key) {
   }
 }
 
-static void edit_filter_text(Tui *tui, int key) {
-  size_t length = strlen(tui->input);
+static size_t previous_character(const char *text, size_t cursor) {
+  if (!cursor) return 0;
 
-  if (key == KEY_BACKSPACE || key == 127 || key == 8) {
-    if (!length) return;
+  cursor--;
 
-    do {
-      length--;
-    } while (length && ((unsigned char)tui->input[length] & 0xc0u) == 0x80u);
+  while (cursor && ((unsigned char)text[cursor] & 0xc0u) == 0x80u) cursor--;
 
-    tui->input[length] = 0;
-  } else if (key == 21) tui->input[0] = 0;
-  else if (key >= 32 && key <= 255 && length + 1 < sizeof(tui->input)) {
-    tui->input[length] = (char)key;
-    tui->input[length + 1] = 0;
-  }
+  return cursor;
 }
 
-static void handle_filter_key(Tui *tui, Search *search, Query *query, int key) {
+static size_t next_character(const char *text, size_t cursor) {
+  if (!text[cursor]) return cursor;
+
+  cursor++;
+
+  while (((unsigned char)text[cursor] & 0xc0u) == 0x80u) cursor++;
+
+  return cursor;
+}
+
+static void edit_filter_text(Tui *tui, int key) {
+  size_t length = strlen(tui->input);
+  size_t cursor = tui->input_cursor;
+  bool changed = false;
+
+  switch (key) {
+  case KEY_LEFT:
+    tui->input_cursor = previous_character(tui->input, cursor);
+    break;
+  case KEY_RIGHT:
+    tui->input_cursor = next_character(tui->input, cursor);
+    break;
+  case KEY_HOME:
+  case 1:
+    tui->input_cursor = 0;
+    break;
+  case KEY_END:
+  case 5:
+    tui->input_cursor = length;
+    break;
+  case KEY_BACKSPACE:
+  case 127:
+  case 8:
+    if (cursor) {
+      size_t previous = previous_character(tui->input, cursor);
+      memmove(tui->input + previous, tui->input + cursor, length - cursor + 1);
+      tui->input_cursor = previous;
+      changed = true;
+    }
+    break;
+  case KEY_DC:
+    if (cursor < length) {
+      size_t next = next_character(tui->input, cursor);
+      memmove(tui->input + cursor, tui->input + next, length - next + 1);
+      changed = true;
+    }
+    break;
+  case 21:
+    tui->input[0] = 0;
+    tui->input_cursor = 0;
+    changed = true;
+    break;
+  case 11:
+    tui->input[cursor] = 0;
+    changed = true;
+    break;
+  default:
+    if (key >= 32 && key <= 255 && length + 1 < sizeof(tui->input)) {
+      memmove(tui->input + cursor + 1, tui->input + cursor, length - cursor + 1);
+      tui->input[cursor] = (char)key;
+      tui->input_cursor++;
+      changed = true;
+    }
+    break;
+  }
+
+  if (changed) tui->input_error[0] = 0;
+}
+
+static bool handle_filter_key(Tui *tui, Search *search, Query *query, int key) {
   if (key == 27) {
     tui->editing = false;
-    apply_filter(tui, search, query, tui->saved_filter);
-    return;
+    tui->input_error[0] = 0;
+    return true;
   }
 
   if (key == '\n' || key == KEY_ENTER) {
+    Query candidate = { 0 };
+    bool valid = query_compile(&candidate, tui->input);
+    bool allocation_failed = candidate.allocation_failed;
+
+    snprintf(tui->input_error, sizeof(tui->input_error), "%s", candidate.error);
+    query_destroy(&candidate);
+
+    if (allocation_failed) {
+      errno = ENOMEM;
+      return false;
+    }
+    if (!valid) return true;
+
+    /* Keep the active regex at its original address; compile it only on submission. */
+    apply_filter(tui, search, query, tui->input);
+
+    if (query->allocation_failed) {
+      errno = ENOMEM;
+      return false;
+    }
+
     tui->editing = false;
-    return;
+    return true;
   }
 
   edit_filter_text(tui, key);
-  apply_filter(tui, search, query, tui->input);
+
+  return true;
 }
 
 static void start_filter_edit(Tui *tui, const Query *query) {
-  memcpy(tui->saved_filter, query->text, sizeof(tui->saved_filter));
   memcpy(tui->input, query->text, sizeof(tui->input));
+  tui->input_cursor = strlen(tui->input);
+  tui->input_scroll = 0;
+  tui->input_error[0] = 0;
 
   tui->editing = true;
 }
@@ -268,7 +355,7 @@ bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int 
   if (key == ERR) return true;
 
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
-  else if (tui->editing) handle_filter_key(tui, search, query, key);
+  else if (tui->editing) return handle_filter_key(tui, search, query, key);
   else if (key >= '0' && key <= '5') {
     LogLevelMask levels = key == '0' ? LOG_LEVELS_ALL : search_levels(search) ^ (1u << (unsigned int)(key - '1'));
     search_set_levels(search, levels);
