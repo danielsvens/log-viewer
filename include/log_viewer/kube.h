@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_KUBE_H
-#define LOG_VIEWER_KUBE_H
+#pragma once
 #include "log_viewer/source_set.h"
 #include "log_viewer/process.h"
 
@@ -10,4 +9,3 @@ void kube_close(SourceSet *set);
 void kube_refresh(SourceSet *set, size_t scope);
 bool kube_reader_poll(LogSource *source, LogStore *store, bool follow, size_t *changed);
 void kube_reader_close(LogSource *source);
-#endif

@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_LOG_STORE_H
-#define LOG_VIEWER_LOG_STORE_H
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
@@ -65,5 +64,3 @@ bool log_store_location(const LogStore *store, size_t id, RecordLocation *locati
 /* 1 = read; 0 = source changed/unavailable; -1 = IO/allocation error. */
 int record_reader_get(RecordReader *reader, RecordLocation location, const char **text);
 void record_reader_destroy(RecordReader *reader);
-
-#endif

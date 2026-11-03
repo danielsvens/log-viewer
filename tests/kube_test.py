@@ -82,6 +82,27 @@ BASE = {'config': {'current-context': 'local', 'contexts': [
                         {'metadata': {'name': 'api-new', 'uid': 'rs2', 'ownerReferences': owner('Deployment', 'deployment1')}}],
         'pods': [pod('api-a', 'pod1'), pod('api-b', 'pod2', 'rs2'), pod('unrelated', 'pod3', 'other')]}
 
+def stop_viewer(viewer, master):
+    """Drain the PTY during shutdown so rendering/endwin cannot block exit."""
+    try:
+        viewer.terminate()
+        deadline = time.monotonic() + 5
+        while viewer.poll() is None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(viewer.args, 5)
+            if select.select([master], [], [], .05)[0]:
+                try:
+                    os.read(master, 65536)
+                except OSError:
+                    break
+        assert viewer.wait(timeout=1) == 130
+    finally:
+        if viewer.poll() is None:
+            os.killpg(viewer.pid, signal.SIGKILL)
+            viewer.wait(timeout=5)
+        os.close(master)
+
+
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     (root / 'kubectl').write_text(FAKE)
@@ -160,6 +181,8 @@ with tempfile.TemporaryDirectory() as directory:
     selector = next(a[a.index('--selector')+1] for a in calls() if 'replicasets' in a)
     assert selector == 'app=api,tier in (api,worker),!retired', selector
 
+    owned_calls = []
+
     # Follow: pending -> available -> scale/rollout -> restart -> retained history.
     state(pending)
     (root / 'calls').write_text('')
@@ -210,9 +233,9 @@ with tempfile.TemporaryDirectory() as directory:
         os.write(master, b'R')
         wait_until(lambda: b'UID changed' in captured)
     finally:
-        viewer.terminate()
-        viewer.wait(timeout=5)
-        os.close(master)
+        stop_viewer(viewer, master)
+    owned_calls.extend((root / 'calls').read_text().splitlines())
+
     # Disconnected readers retry automatically; R overrides their backoff.
     broken = copy.deepcopy(BASE); broken['pods'] = [pod('api-a', 'pod1')]; broken['logs_fail'] = True
     state(broken)
@@ -231,12 +254,11 @@ with tempfile.TemporaryDirectory() as directory:
         wait_until(lambda: b'recovered' in captured)
         wait_until(lambda: b'duplicates' in captured)
     finally:
-        viewer.terminate()
-        viewer.wait(timeout=5)
-        os.close(master)
+        stop_viewer(viewer, master)
 
     # Every viewer-owned fake kubectl process was reaped/terminated at shutdown.
-    for line in (root / 'calls').read_text().splitlines():
+    owned_calls.extend((root / 'calls').read_text().splitlines())
+    for line in owned_calls:
         pid = json.loads(line)[0]
         try: os.kill(pid, 0)
         except ProcessLookupError: continue

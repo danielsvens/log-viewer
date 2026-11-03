@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_SEARCH_H
-#define LOG_VIEWER_SEARCH_H
+#pragma once
 
 #include "log_viewer/source.h"
 #include "log_viewer/log_level.h"
@@ -55,5 +54,3 @@ void log_view_set_follow(Search *search, LogView *view, bool follow);
 void log_view_first(LogView *view);
 /* Returns 1=record, 0=stale result/index, -1=IO/allocation failure. max_bytes=0 reads the whole line. */
 int search_read_result(Search *search, size_t index, RecordReader *reader, TextBuffer *buffer, LogRecord *record, size_t max_bytes);
-
-#endif

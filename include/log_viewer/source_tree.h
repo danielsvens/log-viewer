@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_SOURCE_TREE_H
-#define LOG_VIEWER_SOURCE_TREE_H
+#pragma once
 
 #include "log_viewer/search.h"
 
@@ -17,5 +16,3 @@ typedef struct {
 /* Rows borrow immutable source paths from Search. */
 bool source_tree_sync(SourceTree *tree, Search *search);
 void source_tree_destroy(SourceTree *tree);
-
-#endif

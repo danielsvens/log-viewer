@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_SOURCE_SET_H
-#define LOG_VIEWER_SOURCE_SET_H
+#pragma once
 
 #include "log_viewer/source.h"
 #include <time.h>
@@ -44,5 +43,3 @@ SourceOpenResult source_set_open_inputs(SourceSet *set, const InputSpec *inputs,
 bool source_set_contains(const SourceSet *set, size_t scope, size_t source);
 void source_set_close(SourceSet *set);
 bool source_set_poll(SourceSet *set, LogStore *store, bool follow, size_t *changed);
-
-#endif

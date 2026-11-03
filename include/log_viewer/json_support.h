@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_JSON_SUPPORT_H
-#define LOG_VIEWER_JSON_SUPPORT_H
+#pragma once
 
 #include <stddef.h>
 
@@ -35,5 +34,3 @@ bool json_decode_string(const char *text, char *output, size_t capacity);
 bool json_read_field(const char *text, const char *path, JsonField *field);
 /* Caller owns the result; invalid JSON is copied unchanged. nullptr means OOM. */
 char *json_format_message(const char *text);
-
-#endif

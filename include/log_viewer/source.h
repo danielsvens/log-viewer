@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_SOURCE_H
-#define LOG_VIEWER_SOURCE_H
+#pragma once
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -49,5 +48,3 @@ void source_close(LogSource *source);
 /* changed_from is the earliest changed record, or SIZE_MAX. Mutates only metadata. */
 bool source_poll_stream(LogSource *source, LogStore *store, bool follow, size_t *changed);
 bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *changed_from);
-
-#endif

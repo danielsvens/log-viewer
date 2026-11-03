@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_PROCESS_H
-#define LOG_VIEWER_PROCESS_H
+#pragma once
 #include <sys/types.h>
 #include <stdbool.h>
 
@@ -16,4 +15,3 @@ int process_poll(ManagedProcess *process);
 char *process_output(int fd);
 void process_close(ManagedProcess *process);
 long process_seconds(void);
-#endif
