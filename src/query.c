@@ -46,33 +46,12 @@ static bool append_expression(JsonParser *parser, JsonExpression expression, siz
   return true;
 }
 
-static bool parse_json_condition(JsonParser *parser, size_t *node) {
-  Query *query = parser->query;
-
-  if (query->condition_count == QUERY_MAX_JSON_CONDITIONS) return false;
-
-  JsonCondition *condition = &query->conditions[query->condition_count];
-  skip_space(parser);
-
-  const char *start = parser->next;
-
-  while (isalnum((unsigned char)*parser->next) || *parser->next == '_' || *parser->next == '.' || *parser->next == '-') parser->next++;
-
-  size_t length = (size_t)(parser->next - start);
-
-  if (!length || length >= sizeof(condition->field)) return false;
-
-  memcpy(condition->field, start, length);
-  condition->field[length] = 0;
-  skip_space(parser);
-
+static bool parse_json_operator(JsonParser *parser, JsonCondition *condition) {
   static const struct {
     const char *text;
     QueryOperator operator;
   } operators[] = { { "==", QUERY_EQUAL },  { "!=", QUERY_NOT_EQUAL }, { ">=", QUERY_GREATER_EQUAL }, { "<=", QUERY_LESS_EQUAL },
                     { ">", QUERY_GREATER }, { "<", QUERY_LESS },       { "~", QUERY_CONTAINS } };
-
-  bool found = false;
 
   for (size_t i = 0; i < sizeof(operators) / sizeof(*operators); i++) {
     size_t size = strlen(operators[i].text);
@@ -81,14 +60,15 @@ static bool parse_json_condition(JsonParser *parser, size_t *node) {
 
     condition->operator = operators[i].operator;
     parser->next += size;
-    found = true;
-    break;
+    return true;
   }
 
-  if (!found) return false;
+  return false;
+}
 
+static bool parse_json_value(JsonParser *parser, JsonCondition *condition) {
   skip_space(parser);
-  start = parser->next;
+  const char *start = parser->next;
 
   if (*start == '"') {
     parser->next++;
@@ -110,7 +90,7 @@ static bool parse_json_condition(JsonParser *parser, size_t *node) {
     while (*parser->next && !isspace((unsigned char)*parser->next) && *parser->next != '(' && *parser->next != ')') parser->next++;
   }
 
-  length = (size_t)(parser->next - start);
+  size_t length = (size_t)(parser->next - start);
 
   if (!length || length >= sizeof(condition->value)) return false;
 
@@ -125,6 +105,32 @@ static bool parse_json_condition(JsonParser *parser, size_t *node) {
   char *end;
   condition->numeric_value = strtod(condition->value, &end);
   condition->numeric_valid = end != condition->value && !*end;
+
+  return true;
+}
+
+static bool parse_json_condition(JsonParser *parser, size_t *node) {
+  Query *query = parser->query;
+
+  if (query->condition_count == QUERY_MAX_JSON_CONDITIONS) return false;
+
+  JsonCondition *condition = &query->conditions[query->condition_count];
+  skip_space(parser);
+
+  const char *start = parser->next;
+
+  while (isalnum((unsigned char)*parser->next) || *parser->next == '_' || *parser->next == '.' || *parser->next == '-') parser->next++;
+
+  size_t length = (size_t)(parser->next - start);
+
+  if (!length || length >= sizeof(condition->field)) return false;
+
+  memcpy(condition->field, start, length);
+  condition->field[length] = 0;
+  skip_space(parser);
+
+  if (!parse_json_operator(parser, condition)) return false;
+  if (!parse_json_value(parser, condition)) return false;
 
   size_t index = query->condition_count++;
 

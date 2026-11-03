@@ -46,6 +46,18 @@ struct Search {
   uint64_t history_epoch, cache_clock, preview_revision;
 };
 
+static const SourceGroup *scope_group(const SourceSet *sources, size_t scope) {
+  if (scope < SOURCE_GROUP_BASE || scope == SEARCH_ALL_SOURCES) return nullptr;
+
+  size_t group = scope - SOURCE_GROUP_BASE;
+
+  return group < sources->group_count ? &sources->groups[group] : nullptr;
+}
+
+static bool scope_exists(const SourceSet *sources, size_t scope) {
+  return scope == SEARCH_ALL_SOURCES || scope < sources->count || scope_group(sources, scope) != nullptr;
+}
+
 static size_t result_id(const Search *search, size_t index) {
   return search->all ? index : search->results[index / RESULTS_PER_PAGE][index % RESULTS_PER_PAGE];
 }
@@ -504,41 +516,51 @@ void search_reconnect(Search *search) {
   pthread_mutex_unlock(&search->mutex);
 }
 
-const char *search_source_status(Search *search, size_t id) {
-  const char *status = "";
-  pthread_mutex_lock(&search->mutex);
-  if (id >= SOURCE_GROUP_BASE && id != SEARCH_ALL_SOURCES && id - SOURCE_GROUP_BASE < search->sources.group_count)
-    status = search->sources.groups[id - SOURCE_GROUP_BASE].status;
-  if (id < search->sources.count) {
-    LogSource *source = &search->sources.entries[id].source;
-    if (source->managed) {
-      switch (source->connection) {
-      case CONNECTION_PENDING:
-        status = "connecting";
-        break;
-      case CONNECTION_RESOLVING:
-        status = "resolving";
-        break;
-      case CONNECTION_RUNNING:
-        status = "following";
-        break;
-      case CONNECTION_STOPPED:
-        status = "stopped; R reconnect";
-        break;
-      case CONNECTION_ERROR:
-        status = "error; R reconnect";
-        break;
-      }
-      if (source->kube && source->connection == CONNECTION_ERROR && *source->kube_error) status = source->kube_error;
-      if (source->replayed)
-        status = source->connection == CONNECTION_ERROR     ? "error; history replayed, duplicates possible"
-                 : source->connection == CONNECTION_STOPPED ? "stopped; history replayed, duplicates possible"
-                                                            : "history replayed, duplicates possible";
+static const char *connection_status(const LogSource *source) {
+  if (!source->managed) return "";
+
+  if (source->replayed) {
+    switch (source->connection) {
+    case CONNECTION_ERROR:
+      return "error; history replayed, duplicates possible";
+    case CONNECTION_STOPPED:
+      return "stopped; history replayed, duplicates possible";
+    default:
+      return "history replayed, duplicates possible";
     }
   }
+
+  if (source->kube && source->connection == CONNECTION_ERROR && *source->kube_error) return source->kube_error;
+
+  switch (source->connection) {
+  case CONNECTION_PENDING:
+    return "connecting";
+  case CONNECTION_RESOLVING:
+    return "resolving";
+  case CONNECTION_RUNNING:
+    return "following";
+  case CONNECTION_STOPPED:
+    return "stopped; R reconnect";
+  case CONNECTION_ERROR:
+    return "error; R reconnect";
+  }
+
+  return "";
+}
+
+const char *search_source_status(Search *search, size_t id) {
   static _Thread_local char status_copy[512];
+  const char *status = "";
+  pthread_mutex_lock(&search->mutex);
+
+  const SourceGroup *group = scope_group(&search->sources, id);
+
+  if (group) status = group->status;
+  if (id < search->sources.count) status = connection_status(&search->sources.entries[id].source);
+
   snprintf(status_copy, sizeof(status_copy), "%s", status);
   pthread_mutex_unlock(&search->mutex);
+
   return status_copy;
 }
 
@@ -587,10 +609,7 @@ void search_configure(Search *search, const char *expression, size_t source, Log
   cache_current(search);
 
   snprintf(search->expression, sizeof(search->expression), "%s", expression);
-  search->requested_source = source == SEARCH_ALL_SOURCES || source < search->sources.count ||
-                                     (source >= SOURCE_GROUP_BASE && source - SOURCE_GROUP_BASE < search->sources.group_count)
-                                 ? source
-                                 : SEARCH_ALL_SOURCES;
+  search->requested_source = scope_exists(&search->sources, source) ? source : SEARCH_ALL_SOURCES;
   search->requested_levels = levels & LOG_LEVELS_ALL;
   atomic_fetch_add(&search->requested, 1);
 
@@ -631,17 +650,20 @@ size_t search_source_count(Search *search) {
 }
 
 const char *search_source_name(Search *search, size_t source) {
+  const char *name = nullptr;
   pthread_mutex_lock(&search->mutex);
-  const char *name = source < search->sources.count ? search->sources.entries[source].path : nullptr;
-  if (source >= SOURCE_GROUP_BASE && source != SEARCH_ALL_SOURCES && source - SOURCE_GROUP_BASE < search->sources.group_count) {
-    const char *group_name = search->sources.groups[source - SOURCE_GROUP_BASE].name;
-    pthread_mutex_unlock(&search->mutex);
-    return group_name;
+
+  const SourceGroup *group = scope_group(&search->sources, source);
+
+  if (group) name = group->name;
+  if (source < search->sources.count) {
+    const SourceEntry *entry = &search->sources.entries[source];
+    name = entry->path ? entry->path : "stdin";
   }
-  bool exists = source < search->sources.count;
+
   pthread_mutex_unlock(&search->mutex);
 
-  return exists ? (name ? name : "stdin") : nullptr;
+  return name;
 }
 
 size_t search_selected_source(Search *search) {
@@ -655,9 +677,7 @@ size_t search_selected_source(Search *search) {
 void search_select_source(Search *search, size_t source) {
   pthread_mutex_lock(&search->mutex);
 
-  if ((source == SEARCH_ALL_SOURCES || source < search->sources.count ||
-       (source >= SOURCE_GROUP_BASE && source - SOURCE_GROUP_BASE < search->sources.group_count)) &&
-      source != search->requested_source) {
+  if (scope_exists(&search->sources, source) && source != search->requested_source) {
     snapshot_destroy(&search->preview);
     search->requested_source = source;
     atomic_fetch_add(&search->requested, 1);
@@ -676,12 +696,16 @@ static SearchStatus status_locked(Search *search) {
   for (size_t i = 0; i < search->sources.count; i++)
     connector_failed |= search->sources.entries[i].source.managed && search->sources.entries[i].source.connection == CONNECTION_ERROR;
 
+  size_t matches = current ? search->matches : 0;
+
+  if (cached) matches = search->preview.matches;
+
   return (SearchStatus){ .connector_failed = connector_failed,
                          .cached = cached,
                          .reused = current ? search->reused : 0,
                          .cache_bytes = search->cache_bytes + snapshot_bytes(&search->preview),
                          .count = search->store.count,
-                         .matches = cached ? search->preview.matches : (current ? search->matches : 0),
+                         .matches = matches,
                          .scanned = current ? search->scanned : 0,
                          .unavailable = search->store.unavailable,
                          .revision = search->published,
