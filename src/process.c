@@ -9,6 +9,9 @@
 #include <time.h>
 #include <unistd.h>
 
+static constexpr long REQUEST_TIMEOUT_SECONDS = 10;
+static constexpr off_t OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
+
 extern char **environ;
 
 long process_seconds(void) {
@@ -55,7 +58,7 @@ bool process_capture(ManagedProcess *process, char *const argv[]) {
 int process_poll(ManagedProcess *process) {
   int status;
   pid_t result = waitpid(process->pid, &status, WNOHANG);
-  if (!result && process_seconds() - process->started < 10) return 0;
+  if (!result && process_seconds() - process->started < REQUEST_TIMEOUT_SECONDS) return 0;
   if (!result) {
     kill(process->pid, SIGKILL);
     while (waitpid(process->pid, &status, 0) < 0 && errno == EINTR) {}
@@ -70,7 +73,7 @@ int process_poll(ManagedProcess *process) {
 
 char *process_output(int fd) {
   struct stat identity;
-  if (fstat(fd, &identity) < 0 || identity.st_size > 16 * 1024 * 1024) return nullptr;
+  if (fstat(fd, &identity) < 0 || identity.st_size > OUTPUT_MAX_BYTES) return nullptr;
 
   size_t length = (size_t)identity.st_size;
   char *text = calloc(length + 1, 1);
