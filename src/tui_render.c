@@ -348,8 +348,19 @@ static void render_status(Search *search, const LogView *view, const Query *quer
   }
 
   size_t selected = search_selected_source(search);
-  for (size_t i = 0; i < search_source_count(search); i++) {
-    if (selected != SEARCH_ALL_SOURCES && selected != i) continue;
+  bool target_error = false;
+  for (size_t i = 0; i < search_group_count(search); i++) {
+    size_t parent;
+    const char *name = search_group_name(search, i, &parent);
+    const char *status = search_source_status(search, SOURCE_GROUP_BASE + i);
+    if (!strncmp(status, "error:", 6)) {
+      snprintf(text, sizeof(text), "%s: %s", name, status);
+      target_error = true;
+      break;
+    }
+  }
+  for (size_t i = 0; !target_error && i < search_source_count(search); i++) {
+    if (!search_scope_contains(search, selected, i)) continue;
     const char *status = search_source_status(search, i);
     if (*status && (selected != SEARCH_ALL_SOURCES || strstr(status, "replayed") || strstr(status, "error") || strstr(status, "stopped"))) {
       snprintf(text, sizeof(text), "%s: %s", search_source_name(search, i), status);

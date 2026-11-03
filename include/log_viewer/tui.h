@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_TUI_H
-#define LOG_VIEWER_TUI_H
+#pragma once
 
 #include <ncurses.h>
 #include <stddef.h>
@@ -47,5 +46,3 @@ void tui_close(Tui *tui);
 void tui_render(Tui *tui, Search *search, const LogView *store, const Query *query, bool eof);
 /* False signals a failure to allocate modal text. ERR keys are ignored. */
 bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int key);
-
-#endif

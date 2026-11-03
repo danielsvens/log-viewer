@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_QUERY_H
-#define LOG_VIEWER_QUERY_H
+#pragma once
 
 #include <regex.h>
 #include <stddef.h>
@@ -74,5 +73,3 @@ QueryResult query_match_text_chunk(const Query *query, const char *text, size_t 
 void query_scratch_destroy(QueryScratch *scratch);
 bool query_matches(const Query *query, const char *text);
 void query_destroy(Query *query);
-
-#endif

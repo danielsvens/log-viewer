@@ -38,13 +38,13 @@ endif
 # ===== Sources / Objects =====
 SRC  := $(sort $(shell find src -type f -name '*.c'))
 OBJ  := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
-CORE_SRC := src/log_level.c src/json_support.c src/log_store.c src/query.c src/search.c src/source.c src/source_set.c src/source_tree.c src/text.c
+CORE_SRC := src/process.c src/kube.c src/log_level.c src/json_support.c src/log_store.c src/query.c src/search.c src/source.c src/source_set.c src/source_tree.c src/text.c
 CORE_OBJ := $(patsubst src/%.c,$(OBJDIR)/%.o,$(CORE_SRC))
 TEST_OBJ := $(OBJDIR)/tests/core_test.o
 TEST_BIN := $(OBJDIR)/core-test
 INPUT_TEST_BIN := $(OBJDIR)/input-test
 INPUT_TEST_OBJ := $(OBJDIR)/tests/input_test.o
-DEPS := $(OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(INPUT_TEST_OBJ:.o=.d)
+DEPS := $(OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(INPUT_TEST_OBJ:.o=.d) $(OBJDIR)/tests/kube_test.d
 
 # Preserve the bundled third-party JSON header's upstream formatting.
 FORMAT_FILES := $(sort $(SRC) $(filter-out include/json.h,$(shell find include -type f -name '*.h')) $(shell find tests benchmarks -type f -name '*.c'))
@@ -85,10 +85,14 @@ benchmark:
 	$(MAKE) MODE=release build/release/bench
 	python3 benchmarks/run.py $(BENCH_ARGS)
 
-test: $(BIN) $(TEST_BIN) $(INPUT_TEST_BIN)
+$(OBJDIR)/kube-test: $(CORE_OBJ) $(OBJDIR)/tests/kube_test.o
+	$(CC) $(LDFLAGS) $^ -o $@ -pthread
+
+test: $(BIN) $(TEST_BIN) $(INPUT_TEST_BIN) $(OBJDIR)/kube-test
 	./$(TEST_BIN)
 	./$(INPUT_TEST_BIN)
 	python3 tests/test.py
+	KUBE_TEST_BIN=$(OBJDIR)/kube-test python3 tests/kube_test.py
 	python3 tests/release_test.py
 
 # Optional terminal interaction checks; excluded from release gates.
@@ -102,9 +106,11 @@ sanitize:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined $(SRC) -o build/sanitize/log-viewer $(LDFLAGS) $(LDLIBS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/core_test.c $(CORE_SRC) -o build/sanitize/core-test $(LDFLAGS) -pthread
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/input_test.c src/tui_input.c $(CORE_SRC) -o build/sanitize/input-test $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/kube_test.c $(CORE_SRC) -o build/sanitize/kube-test $(LDFLAGS) -pthread
 	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/core-test
 	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/input-test
 	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 LOG_VIEWER_BIN=build/sanitize/log-viewer python3 tests/test.py
+	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 KUBE_TEST_BIN=build/sanitize/kube-test LOG_VIEWER_BIN=build/sanitize/log-viewer python3 tests/kube_test.py
 
 threadcheck:
 	@mkdir -p build/threadcheck
@@ -117,9 +123,11 @@ memcheck:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/core_test.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/core-test $(LDFLAGS) -pthread
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin $(SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/log-viewer $(LDFLAGS) $(LDLIBS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/input_test.c src/tui_input.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/input-test $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/kube_test.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/kube-test $(LDFLAGS) -pthread
 	./build/memcheck/core-test
 	./build/memcheck/input-test
 	LOG_VIEWER_BIN=build/memcheck/log-viewer python3 tests/test.py
+	KUBE_TEST_BIN=build/memcheck/kube-test KUBE_ALLOCATIONS=1 LOG_VIEWER_BIN=build/memcheck/log-viewer python3 tests/kube_test.py
 	python3 tests/failures.py build/memcheck/log-viewer
 
 format:

@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_TEXT_H
-#define LOG_VIEWER_TEXT_H
+#pragma once
 
 #include <stddef.h>
 
@@ -17,6 +16,3 @@ char *text_copy(const char *text);
 char *text_trim(char *text);
 /* Allocates printable log text, removing control bytes and ANSI CSI sequences. */
 char *text_sanitize(const char *text, size_t length);
-
-
-#endif

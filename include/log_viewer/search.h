@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_SEARCH_H
-#define LOG_VIEWER_SEARCH_H
+#pragma once
 
 #include "log_viewer/source.h"
 #include "log_viewer/log_level.h"
@@ -41,6 +40,10 @@ LogLevelMask search_levels(Search *search);
 void search_set_levels(Search *search, LogLevelMask levels);
 /* Names are borrowed and remain valid until search_close(), including after discovery. */
 size_t search_source_count(Search *search);
+size_t search_registry_revision(Search *search);
+size_t search_group_count(Search *search);
+const char *search_group_name(Search *search, size_t group, size_t *parent);
+bool search_scope_contains(Search *search, size_t scope, size_t source);
 const char *search_source_name(Search *search, size_t source);
 size_t search_selected_source(Search *search);
 void search_select_source(Search *search, size_t source);
@@ -51,5 +54,3 @@ void log_view_set_follow(Search *search, LogView *view, bool follow);
 void log_view_first(LogView *view);
 /* Returns 1=record, 0=stale result/index, -1=IO/allocation failure. max_bytes=0 reads the whole line. */
 int search_read_result(Search *search, size_t index, RecordReader *reader, TextBuffer *buffer, LogRecord *record, size_t max_bytes);
-
-#endif

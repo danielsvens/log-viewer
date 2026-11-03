@@ -1,5 +1,4 @@
-#ifndef LOG_VIEWER_LOG_LEVEL_H
-#define LOG_VIEWER_LOG_LEVEL_H
+#pragma once
 
 #include <stddef.h>
 #include "log_viewer/json_support.h"
@@ -14,5 +13,3 @@ const char *log_level_name(LogLevel level);
 bool log_levels_parse(const char *text, LogLevelMask *mask);
 /* Input is normalized and NUL-terminated. False means an allocation failure. */
 bool log_level_detect(const char *text, size_t length, JsonWorkspace *workspace, LogLevel *level);
-
-#endif

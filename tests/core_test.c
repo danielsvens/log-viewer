@@ -906,7 +906,7 @@ static void test_docker_reconnect(void) {
 
   char *previous = text_copy(getenv("PATH"));
   assert(previous && setenv("PATH", directory, 1) == 0);
-  InputSpec input = { INPUT_DOCKER, "--unsafe;name" };
+  InputSpec input = { .kind = INPUT_DOCKER, .value = "--unsafe;name" };
   Search *search = nullptr;
   assert(search_open_inputs(&search, &input, 1, "1000", "", true) == SOURCE_OPENED);
   wait_for_counts(search, 2, 2);
@@ -929,7 +929,7 @@ static void test_docker_reconnect(void) {
   text_buffer_destroy(&buffer);
   search_close(search);
 
-  InputSpec pair[] = { { INPUT_DOCKER, "api" }, { INPUT_DOCKER, "worker" } };
+  InputSpec pair[] = { { .kind = INPUT_DOCKER, .value = "api" }, { .kind = INPUT_DOCKER, .value = "worker" } };
   assert(search_open_inputs(&search, pair, 2, "all", "", true) == SOURCE_OPENED);
   wait_for_counts(search, 4, 4);
   search_select_source(search, 0);

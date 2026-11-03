@@ -19,6 +19,21 @@ with tempfile.TemporaryDirectory() as directory:
     assert b'\0' not in result.stdout
 
 
+# Dispatch rejects missing values consistently and preserves positional boundaries.
+for option in ('--kube', '--kube-context', '--kube-namespace', '--kube-tail',
+               '--docker', '--docker-tail', '--levels', '--filter'):
+    result = subprocess.run([BIN, option], text=True, capture_output=True)
+    assert result.returncode == 2 and f'Expected {option} ' in result.stderr, (option, result)
+
+with tempfile.TemporaryDirectory() as directory:
+    with open(os.path.join(directory, '--filter'), 'w') as stream:
+        stream.write('info keep\nerror discard\n')
+    result = subprocess.run([BIN, '--dump', '--filter', 'discard', '--filter', 'keep',
+                             '--levels', 'none', '--levels', 'all', '--', '--filter'],
+                            cwd=directory, text=True, capture_output=True)
+    assert result.returncode == 0 and result.stdout == 'info keep\n', result
+
+
 records = '{"level":"error","http":{"status":503},"message":"timeout"}\n{"level":"info","http":{"status":200}}\nplain warning\n'
 for query, expected in [('', 3), ('ERROR', 1), ('~error|warning', 2),
                         ('json | level == "error"', 1),

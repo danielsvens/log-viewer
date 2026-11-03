@@ -1,0 +1,132 @@
+name: Build and test
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Sign and upload binaries for release packaging
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Test and build Linux x86-64
+    runs-on: ubuntu-24.04
+    container: gcc:16.2.0-trixie
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends libncurses-dev python3
+
+      - name: Run debug tests
+        run: make --jobs=2 MODE=debug test
+
+      - name: Run release tests
+        run: make --jobs=2 MODE=release test
+
+      - name: Check allocation cleanup and failure paths
+        run: make MODE=release memcheck
+
+      - name: Save tested binary
+        if: inputs.package
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-binary
+          path: log-viewer
+          if-no-files-found: error
+          retention-days: 7
+
+  test-and-build-macos:
+    name: Test and build macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          brew install gcc@15 ncurses make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gcc@15)/bin" >> "$GITHUB_PATH"
+
+      - name: Run debug and release tests
+        run: |
+          ncurses_prefix="$(brew --prefix ncurses)"
+          test -f "$ncurses_prefix/lib/libncursesw.a"
+          make --jobs=2 CC=gcc-15 MODE=debug \
+            NCURSES_LIBS="$ncurses_prefix/lib/libncursesw.a" LDFLAGS=-static-libgcc test
+          make --jobs=2 CC=gcc-15 MODE=release \
+            NCURSES_LIBS="$ncurses_prefix/lib/libncursesw.a" LDFLAGS=-static-libgcc test
+
+      - name: Sign and verify standalone binary
+        if: inputs.package
+        working-directory: ${{ runner.temp }}
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          # A flat bundle heuristic can treat the checkout as the executable's bundle.
+          # Sign a separate file outside that directory, with an unrelated parent name.
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/log-viewer-signing-XXXXXX")"
+          binary="$signing_dir/log-viewer"
+          install -m 755 "$GITHUB_WORKSPACE/log-viewer" "$binary"
+          test "$(lipo -archs "$binary")" = "$EXPECTED_ARCH"
+          codesign --force --sign - --timestamp=none \
+            --identifier io.github.danielsvens.log-viewer "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_macos_binary.py" "$binary"
+          mkdir -p "$GITHUB_WORKSPACE/build/macos"
+          install -m 755 "$binary" "$GITHUB_WORKSPACE/build/macos/log-viewer"
+          cmp "$binary" "$GITHUB_WORKSPACE/build/macos/log-viewer"
+
+      - name: Smoke-test signed binary
+        if: inputs.package
+        env:
+          LOG_VIEWER_BIN: build/macos/log-viewer
+        run: |
+          ./build/macos/log-viewer --help
+          python3 tests/test.py
+
+      - name: Stage third-party license
+        if: inputs.package
+        run: |
+          mkdir -p build/macos/licenses
+          cp "$(brew --prefix ncurses)/COPYING" build/macos/licenses/ncurses.txt
+
+      - name: Save tested macOS binary
+        if: inputs.package
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}-binary
+          path: build/macos/
+          if-no-files-found: error
+          retention-days: 7
+

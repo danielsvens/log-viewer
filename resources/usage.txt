@@ -1,6 +1,6 @@
 Usage: log-viewer [OPTIONS] [FILE|DIRECTORY|-]...
 
-Follow logs from files, directories, stdin, or Docker containers.
+Follow logs from files, directories, stdin, Docker, or Kubernetes containers.
 
 Inputs
   FILE                   Read a file and follow new output.
@@ -25,10 +25,29 @@ Examples
 
 Keyboard
   / filter    Enter inspect    Tab sources/logs    ? help    q quit
-  1-5 toggle levels    0 all levels    R reconnect Docker sources
+  1-5 toggle levels    0 all levels    R reconnect sources / refresh targets
 
 Docker
   Requires the Docker CLI and access to the current Docker context.
   Follows new output unless --dump is used. Stopped sources retain history.
   R reconnects the selected source, or all disconnected sources in All sources.
   Reconnect replays the configured tail; duplicate records are possible.
+
+Kubernetes
+  --kube deployment/NAME  Attach every replica (deploy/NAME is also accepted).
+  --kube pod/NAME         Attach one pod. Repeat --kube for additional targets.
+  --kube-context NAME     Use this context for every Kubernetes target.
+  --kube-namespace NAME   Use this namespace for every Kubernetes target.
+  --kube-tail N|all       History per regular container (default: 1000).
+  Requires kubectl and read access to deployments, ReplicaSets, pods, and pod logs.
+  Omitted context/namespace are resolved once and pinned for this session.
+  Select deployment, pod, or individual container rows in the source tree.
+  Discovers replicas and restarts every two seconds; retains removed pod history.
+  Failed discovery/readers retry with backoff. R retries the selected scope now.
+  Replay can duplicate records; gaps are possible. Previous logs are not fetched.
+  --dump takes one snapshot, drains current history, and exits without retrying.
+
+  log-viewer --kube deployment/api --kube deployment/worker
+  log-viewer --kube pod/api-7d8c9-abcde application.log
+  log-viewer --kube deployment/api --kube-namespace production
+  log-viewer --kube deployment/api --kube-context staging --kube-tail all
