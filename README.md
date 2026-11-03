@@ -118,8 +118,12 @@ scroll position, and follow setting. Switch with Shift+Left / Shift+Right; the a
 in the tab bar above the filter editor. Tabs last for the current session.
 
 All tabs share the indexed logs. Only the active tab searches, so opening tabs
-does not duplicate log data or add background searches. Switching reruns that
-tab’s query and may briefly show “Searching…” on large inputs.
+does not duplicate log data or add background searches. Recent results are cached
+within an 8 MiB total budget. Switching shows cached results immediately while
+the tab catches up with new logs. If older
+records changed, the previous results remain visible during a full refresh;
+“REFRESHING CACHED RESULTS” marks them until the update finishes. Tabs without a
+cached result may briefly show “Searching…” on large inputs.
 
 Press `y` in the quit dialog to exit; `n`, Esc, or Enter returns to the viewer.
 

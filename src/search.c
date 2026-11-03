@@ -13,6 +13,18 @@
 static constexpr size_t SEARCH_BATCH = 8192;
 static constexpr size_t RESULTS_PER_PAGE = 65536;
 
+static constexpr size_t SEARCH_CACHE_BYTES = 8 * 1024 * 1024;
+static constexpr size_t SEARCH_CACHE_ENTRIES = 8;
+
+typedef struct {
+  char expression[QUERY_CAPACITY];
+  size_t source, matches, scanned;
+  LogLevelMask levels;
+  uint64_t epoch, used;
+  size_t *ids;
+  bool valid, all;
+} SearchSnapshot;
+
 struct Search {
   pthread_mutex_t mutex;
   pthread_cond_t wake;
@@ -28,10 +40,128 @@ struct Search {
   LogStore store;
   size_t **results, result_pages, result_capacity, matches, scanned;
   int error;
+  SearchSnapshot cache[SEARCH_CACHE_ENTRIES], preview;
+  size_t cache_bytes, reused;
+  uint64_t history_epoch, cache_clock, preview_revision;
 };
 
 static size_t result_id(const Search *search, size_t index) {
   return search->all ? index : search->results[index / RESULTS_PER_PAGE][index % RESULTS_PER_PAGE];
+}
+
+static bool has_preview(const Search *search) { return search->preview.valid && search->preview_revision == atomic_load(&search->requested); }
+
+static size_t view_result_id(const Search *search, size_t index) {
+  if (!has_preview(search)) return result_id(search, index);
+
+  return search->preview.all ? index : search->preview.ids[index];
+}
+
+static void snapshot_destroy(SearchSnapshot *snapshot) {
+  free(snapshot->ids);
+  *snapshot = (SearchSnapshot){ 0 };
+}
+
+static size_t snapshot_bytes(const SearchSnapshot *snapshot) { return snapshot->all ? 0 : snapshot->matches * sizeof(size_t); }
+
+static void evict_snapshot(Search *search, size_t index) {
+  search->cache_bytes -= snapshot_bytes(&search->cache[index]);
+  snapshot_destroy(&search->cache[index]);
+}
+
+static bool same_snapshot(const SearchSnapshot *snapshot, const char *expression, size_t source, LogLevelMask levels) {
+  return snapshot->valid && snapshot->source == source && snapshot->levels == levels && !strcmp(snapshot->expression, expression);
+}
+
+/* Cache failure is optional: keep searching normally rather than failing the application. */
+static void cache_current(Search *search) {
+  SearchSnapshot snapshot = { 0 };
+  bool preview = has_preview(search);
+
+  if (!preview && search->published != atomic_load(&search->requested)) return;
+
+  if (preview) snapshot = search->preview;
+  else {
+    if (!search->all && search->matches > SEARCH_CACHE_BYTES / sizeof(size_t)) return;
+
+    snapshot = (SearchSnapshot){ .source = search->requested_source,
+                                 .levels = search->requested_levels,
+                                 .matches = search->matches,
+                                 .scanned = search->scanned,
+                                 .epoch = search->history_epoch,
+                                 .all = search->all,
+                                 .valid = true };
+    memcpy(snapshot.expression, search->expression, sizeof(snapshot.expression));
+  }
+
+  size_t bytes = snapshot_bytes(&snapshot);
+
+  for (size_t i = 0; i < SEARCH_CACHE_ENTRIES; i++) {
+    if (same_snapshot(&search->cache[i], snapshot.expression, snapshot.source, snapshot.levels)) evict_snapshot(search, i);
+  }
+
+  size_t slot = SEARCH_CACHE_ENTRIES;
+
+  while (slot == SEARCH_CACHE_ENTRIES || search->cache_bytes > SEARCH_CACHE_BYTES - bytes) {
+    size_t oldest = 0;
+
+    for (size_t i = 0; i < SEARCH_CACHE_ENTRIES; i++) {
+      if (!search->cache[i].valid) slot = i;
+      else if (!search->cache[oldest].valid || search->cache[i].used < search->cache[oldest].used) oldest = i;
+    }
+
+    if (slot != SEARCH_CACHE_ENTRIES && search->cache_bytes <= SEARCH_CACHE_BYTES - bytes) break;
+
+    evict_snapshot(search, oldest);
+    slot = oldest;
+  }
+
+  if (!preview && bytes) {
+    snapshot.ids = malloc(bytes);
+
+    if (!snapshot.ids) return;
+
+    for (size_t i = 0; i < snapshot.matches; i++) snapshot.ids[i] = result_id(search, i);
+  }
+
+  snapshot.used = ++search->cache_clock;
+  search->cache[slot] = snapshot;
+  search->cache_bytes += bytes;
+
+  if (preview) search->preview = (SearchSnapshot){ 0 };
+}
+
+static void restore_preview(Search *search) {
+  snapshot_destroy(&search->preview);
+
+  for (size_t i = 0; i < SEARCH_CACHE_ENTRIES; i++) {
+    if (!same_snapshot(&search->cache[i], search->expression, search->requested_source, search->requested_levels)) continue;
+
+    search->preview = search->cache[i];
+    search->cache_bytes -= snapshot_bytes(&search->preview);
+    search->cache[i] = (SearchSnapshot){ 0 };
+    search->preview_revision = atomic_load(&search->requested);
+    break;
+  }
+}
+
+static void finish_preview(Search *search) {
+  if (search->published == atomic_load(&search->requested) && search->scanned == search->store.count && !search->sources.loading) {
+    snapshot_destroy(&search->preview);
+  }
+}
+
+static size_t view_lower_bound(const Search *search, size_t id) {
+  size_t low = 0, high = has_preview(search) ? search->preview.matches : search->matches;
+
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+
+    if (view_result_id(search, middle) < id) low = middle + 1;
+    else high = middle;
+  }
+
+  return low;
 }
 
 static size_t lower_bound(const Search *search, size_t id) {
@@ -165,17 +295,45 @@ static void *search_worker(void *context) {
         break;
       }
 
+      if (requested != atomic_load(&search->requested)) {
+        pthread_mutex_unlock(&search->mutex);
+        continue;
+      }
+
       selected_source = source;
       levels = requested_levels;
       revision = requested;
       scanned = 0;
+      search->reused = 0;
 
       search->published = revision;
       search->matches = search->scanned = 0;
       unfiltered = query.kind == QUERY_TEXT && !*query.error && !query.term_count;
       search->all = selected_source == SEARCH_ALL_SOURCES && unfiltered && levels == LOG_LEVELS_ALL;
+
+      if (has_preview(search) && search->preview.epoch == search->history_epoch && search->preview.scanned <= search->store.count) {
+        SearchSnapshot *snapshot = &search->preview;
+
+        if (!snapshot->all) {
+          for (size_t i = 0; i < snapshot->matches; i++) {
+            if (!append_result(search, snapshot->ids[i])) {
+              search->error = errno ? errno : ENOMEM;
+              break;
+            }
+          }
+        } else search->matches = snapshot->matches;
+
+        scanned = search->scanned = search->reused = snapshot->scanned;
+        reader.length = 0;
+      }
+
+      if (search->error) {
+        pthread_mutex_unlock(&search->mutex);
+        break;
+      }
     }
 
+    size_t before = search->store.count;
     size_t changed;
     bool ingested = source_set_poll(&search->sources, &search->store, search->follow_file, &changed);
 
@@ -185,8 +343,10 @@ static void *search_worker(void *context) {
       break;
     }
 
+    if (changed < before) search->history_epoch++;
+
     if (changed < scanned) {
-      scanned = changed;
+      scanned = search->scanned = changed;
       search->matches = search->all ? changed : lower_bound(search, changed);
       reader.length = 0;
     }
@@ -199,6 +359,8 @@ static void *search_worker(void *context) {
       search->matches = search->all ? count : 0;
       scanned = count;
       search->scanned = count;
+
+      finish_preview(search);
 
       if (idle) wait_for_work(search);
 
@@ -237,6 +399,7 @@ static void *search_worker(void *context) {
         if (!append_result(search, ids[i])) error = errno;
 
       search->scanned = scanned;
+      finish_preview(search);
     }
 
     if (error) search->error = error;
@@ -330,6 +493,8 @@ void search_close(Search *search) {
   for (size_t i = 0; i < search->result_pages; i++) free(search->results[i]);
 
   free(search->results);
+  snapshot_destroy(&search->preview);
+  for (size_t i = 0; i < SEARCH_CACHE_ENTRIES; i++) snapshot_destroy(&search->cache[i]);
 
   pthread_cond_destroy(&search->wake);
   pthread_mutex_destroy(&search->mutex);
@@ -339,6 +504,7 @@ void search_close(Search *search) {
 
 void search_request(Search *search, const char *expression) {
   pthread_mutex_lock(&search->mutex);
+  snapshot_destroy(&search->preview);
 
   snprintf(search->expression, sizeof(search->expression), "%s", expression);
   atomic_fetch_add(&search->requested, 1);
@@ -349,11 +515,14 @@ void search_request(Search *search, const char *expression) {
 
 void search_configure(Search *search, const char *expression, size_t source, LogLevelMask levels) {
   pthread_mutex_lock(&search->mutex);
+  cache_current(search);
 
   snprintf(search->expression, sizeof(search->expression), "%s", expression);
   search->requested_source = source == SEARCH_ALL_SOURCES || source < search->sources.count ? source : SEARCH_ALL_SOURCES;
   search->requested_levels = levels & LOG_LEVELS_ALL;
   atomic_fetch_add(&search->requested, 1);
+
+  restore_preview(search);
 
   pthread_cond_signal(&search->wake);
   pthread_mutex_unlock(&search->mutex);
@@ -372,6 +541,7 @@ void search_set_levels(Search *search, LogLevelMask levels) {
   pthread_mutex_lock(&search->mutex);
 
   if (levels != search->requested_levels) {
+    snapshot_destroy(&search->preview);
     search->requested_levels = levels;
     atomic_fetch_add(&search->requested, 1);
     pthread_cond_signal(&search->wake);
@@ -409,6 +579,7 @@ void search_select_source(Search *search, size_t source) {
   pthread_mutex_lock(&search->mutex);
 
   if ((source == SEARCH_ALL_SOURCES || source < search->sources.count) && source != search->requested_source) {
+    snapshot_destroy(&search->preview);
     search->requested_source = source;
     atomic_fetch_add(&search->requested, 1);
     pthread_cond_signal(&search->wake);
@@ -420,8 +591,13 @@ void search_select_source(Search *search, size_t source) {
 static SearchStatus status_locked(Search *search) {
   bool current = search->published == atomic_load(&search->requested);
 
-  return (SearchStatus){ .count = search->store.count,
-                         .matches = current ? search->matches : 0,
+  bool cached = has_preview(search);
+
+  return (SearchStatus){ .cached = cached,
+                         .reused = current ? search->reused : 0,
+                         .cache_bytes = search->cache_bytes + snapshot_bytes(&search->preview),
+                         .count = search->store.count,
+                         .matches = cached ? search->preview.matches : (current ? search->matches : 0),
                          .scanned = current ? search->scanned : 0,
                          .unavailable = search->store.unavailable,
                          .revision = search->published,
@@ -449,12 +625,13 @@ void search_sync_view(Search *search, LogView *view) {
   view->matches = status.matches;
   view->unavailable = status.unavailable;
   view->searching = status.searching;
+  view->cached = status.cached;
 
   if (view->follow) view->selected = status.matches ? status.matches - 1 : 0;
   else if (status.matches) {
-    size_t nearest = lower_bound(search, (size_t)view->anchor);
+    size_t nearest = view_lower_bound(search, (size_t)view->anchor);
 
-    if (nearest == status.matches || result_id(search, nearest) > view->anchor) {
+    if (nearest == status.matches || view_result_id(search, nearest) > view->anchor) {
       if (nearest) nearest--;
     }
 
@@ -476,7 +653,7 @@ void log_view_move(Search *search, LogView *view, long delta) {
 
   view->follow = false;
   view->selected = matches ? (size_t)selected : 0;
-  if (matches) view->anchor = result_id(search, view->selected);
+  if (matches) view->anchor = view_result_id(search, view->selected);
 
   pthread_mutex_unlock(&search->mutex);
 }
@@ -498,7 +675,7 @@ int search_read_result(Search *search, size_t index, RecordReader *reader, TextB
 
   size_t matches = status_locked(search).matches;
   RecordLocation location;
-  size_t id = index < matches ? result_id(search, index) : SIZE_MAX;
+  size_t id = index < matches ? view_result_id(search, index) : SIZE_MAX;
   bool exists = log_store_location(&search->store, id, &location);
   pthread_mutex_unlock(&search->mutex);
 

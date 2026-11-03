@@ -764,7 +764,128 @@ static void test_level_filter_history_and_sources(void) {
   unlink(second);
 }
 
+static void test_cached_search_refresh(void) {
+  char path[] = "/tmp/log-viewer-cache-XXXXXX";
+  int fd = mkstemp(path);
+  assert(fd >= 0);
+  FILE *file = fdopen(fd, "w");
+  assert(file && fputs("{\"status\":503}\n{\"status\":200}\n", file) >= 0 && fclose(file) == 0);
+
+  Search *search = nullptr;
+  const char *query = "json | status >= 500";
+  assert(search_open(&search, path, query, true) == SOURCE_OPENED);
+  wait_for_counts(search, 2, 1);
+  search_configure(search, "", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 2, 2);
+  file = fopen(path, "a");
+  assert(file && fputs("{\"status\":503}\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 3, 3);
+  search_configure(search, query, SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 3, 2);
+  assert(search_status(search).reused == 2);
+
+  /* An indexed partial record changes in place while this query is inactive. */
+  search_configure(search, "", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 3, 3);
+  file = fopen(path, "a");
+  assert(file && fputs("{\"status\":503", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 4, 4);
+  file = fopen(path, "a");
+  assert(file && fputs("}\n", file) >= 0 && fclose(file) == 0);
+
+  /* Wait until the updated record is seen using another query before restoring. */
+  search_request(search, "503");
+  wait_for_counts(search, 4, 3);
+  search_configure(search, query, SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 4, 3);
+  assert(search_status(search).reused == 0);
+
+  search_configure(search, "", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 4, 4);
+  file = fopen(path, "w");
+  assert(file && fputs("{\"status\":200}\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 5, 5);
+  search_configure(search, query, SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 5, 0);
+  assert(search_status(search).reused == 0 && search_status(search).unavailable == 4);
+
+  search_configure(search, "", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 5, 5);
+  char rotated[128];
+  snprintf(rotated, sizeof(rotated), "%s.old", path);
+  assert(rename(path, rotated) == 0);
+  file = fopen(path, "w");
+  assert(file && fputs("{\"status\":503}\n", file) >= 0 && fclose(file) == 0);
+  wait_for_counts(search, 6, 6);
+  search_configure(search, query, SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, 6, 1);
+  assert(search_status(search).reused == 5);
+
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+  assert(search_read_result(search, 0, &reader, &buffer, &record, 0) == 1 && record.id == 6);
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  search_close(search);
+  unlink(path);
+  unlink(rotated);
+}
+
+static void test_cached_search_budget(void) {
+  char path[] = "/tmp/log-viewer-cache-budget-XXXXXX";
+  int fd = mkstemp(path);
+  assert(fd >= 0);
+  FILE *file = fdopen(fd, "w");
+  assert(file);
+  constexpr size_t RECORDS = 400000;
+
+  for (size_t i = 0; i < RECORDS; i++) assert(fputs("common token0 token1 token2 token3 token4 token5 token6 token7\n", file) >= 0);
+
+  assert(fclose(file) == 0);
+  Search *search = nullptr;
+  assert(search_open(&search, path, "common AND token0", false) == SOURCE_OPENED);
+  wait_for_counts(search, RECORDS, RECORDS);
+
+  for (size_t i = 1; i < 8; i++) {
+    char expression[64];
+    snprintf(expression, sizeof(expression), "common AND token%zu", i);
+    search_configure(search, expression, SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+    wait_for_counts(search, RECORDS, RECORDS);
+    assert(search_status(search).cache_bytes <= 8 * 1024 * 1024);
+  }
+
+  search_configure(search, "common AND token6", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  assert(search_status(search).matches == RECORDS);
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+  assert(search_read_result(search, RECORDS - 1, &reader, &buffer, &record, 0) == 1 && record.id == RECORDS);
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  wait_for_counts(search, RECORDS, RECORDS);
+  assert(search_status(search).reused == RECORDS);
+  search_configure(search, "common AND token0", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  wait_for_counts(search, RECORDS, RECORDS);
+  assert(search_status(search).reused == 0);
+
+  for (size_t i = 0; i < 30; i++) {
+    search_configure(search, "common AND token6", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+    search_configure(search, "common AND token7", SEARCH_ALL_SOURCES, LOG_LEVELS_ALL);
+  }
+
+  wait_for_counts(search, RECORDS, RECORDS);
+  assert(search_status(search).cache_bytes <= 8 * 1024 * 1024);
+  search_request(search, "no-match");
+  wait_for_counts(search, RECORDS, 0);
+  assert(!search_status(search).cached);
+  search_close(search);
+  unlink(path);
+}
+
 int main(void) {
+  test_cached_search_refresh();
+  test_cached_search_budget();
   test_level_filter_history_and_sources();
   test_log_levels();
   test_directory_discovery_and_rotation();

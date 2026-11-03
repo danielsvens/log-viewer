@@ -13,15 +13,17 @@ constexpr size_t SEARCH_ALL_SOURCES = SIZE_MAX;
 
 typedef struct {
   size_t count, matches, scanned, unavailable;
+  /* Records reused on the current search; cache_bytes includes any visible preview. */
+  size_t reused, cache_bytes;
   uint64_t revision;
-  bool searching, eof;
+  bool searching, eof, cached;
   int error;
 } SearchStatus;
 
 typedef struct {
   size_t count, matches, selected, unavailable;
   uint64_t anchor, revision;
-  bool follow, searching;
+  bool follow, searching, cached;
 } LogView;
 
 SourceOpenResult search_open(Search **search, const char *path, const char *expression, bool follow);

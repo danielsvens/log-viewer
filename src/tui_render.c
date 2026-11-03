@@ -118,7 +118,9 @@ static void render_header(const LogView *store, bool eof, int width) {
       store->follow ? "FOLLOW" : "PAUSED",
       store->matches,
       store->count,
-      store->searching ? "SEARCHING / INDEXING" : (eof ? "waiting / EOF" : "LIVE")
+      store->cached      ? "REFRESHING CACHED RESULTS"
+      : store->searching ? "SEARCHING / INDEXING"
+                         : (eof ? "waiting / EOF" : "LIVE")
   );
 
   if (store->unavailable) mvprintw(0, width > 55 ? width - 40 : 0, "%zu records lost to source truncation", store->unavailable);
@@ -142,7 +144,7 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
   tui->selected_source = nullptr;
 
   if (tui->restoring_tab) {
-    if (store->searching) {
+    if (store->searching && !store->cached) {
       mvaddstr(2, left + 2, "Searching...");
       return;
     }
@@ -177,7 +179,7 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
     render_record(&record, (int)row + 1, left, width, tui->horizontal, index == store->selected, level);
   }
 
-  if (!store->matches) mvaddstr(2, left + 2, *query->error ? "Invalid query" : (store->searching ? "Searching..." : "No matching logs"));
+  if (!store->matches) mvaddstr(2, left + 2, *query->error ? "Invalid query" : (store->searching && !store->cached ? "Searching..." : "No matching logs"));
 }
 
 static void render_tree(Tui *tui, Search *search, int height, int width) {
@@ -309,6 +311,11 @@ static void render_status(Search *search, const LogView *view, const Query *quer
   }
 
   size_t used = strlen(text);
+
+  if (view->cached) {
+    snprintf(text + used, sizeof(text) - used, " (cached)");
+    used = strlen(text);
+  }
 
   if (view->unavailable) {
     snprintf(text + used, sizeof(text) - used, "  |  Unavailable: %zu", view->unavailable);
