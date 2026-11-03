@@ -41,6 +41,10 @@ LogLevelMask search_levels(Search *search);
 void search_set_levels(Search *search, LogLevelMask levels);
 /* Names are borrowed and remain valid until search_close(), including after discovery. */
 size_t search_source_count(Search *search);
+size_t search_registry_revision(Search *search);
+size_t search_group_count(Search *search);
+const char *search_group_name(Search *search, size_t group, size_t *parent);
+bool search_scope_contains(Search *search, size_t scope, size_t source);
 const char *search_source_name(Search *search, size_t source);
 size_t search_selected_source(Search *search);
 void search_select_source(Search *search, size_t source);

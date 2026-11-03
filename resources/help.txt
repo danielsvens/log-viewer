@@ -11,7 +11,7 @@ Sources & tabs
   Tab               Focus sources / logs
   s                 Show / hide source tree
   a (tree)          Read all sources
-  R                 Reconnect disconnected Docker sources in this scope
+  R                 Reconnect sources and refresh Kubernetes targets in this scope
   t                 New filter tab
   Shift-Left/Right  Previous / next tab
   x                 Close tab (keep one)
@@ -42,8 +42,16 @@ Query examples
   Text and regex are case-insensitive; JSON values are case-sensitive.
   AND before OR; parentheses group conditions.
 
-History & Docker
+History & containers
   All indexed history is retained; streams use temporary disk storage.
-  Docker reconnect replays the configured tail; duplicates are possible.
+  Container reconnect replays the configured tail; duplicates are possible.
 
 Help: arrows / Page Up / Page Down scroll; q or Esc closes.
+
+Kubernetes
+  Deployment and pod rows select all their containers, including new replicas.
+  Removed pods keep their history. Pending pods remain visible while waiting.
+  Every regular container is included; init and ephemeral containers are excluded.
+  Discovery runs every two seconds. Failed requests retry with backoff.
+  R refreshes targets and retries disconnected readers in the selected scope.
+  Restarts append to the same source. Replays may duplicate records; gaps are possible.

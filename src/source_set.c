@@ -1,5 +1,6 @@
 #include "log_viewer/source_set.h"
 #include "log_viewer/text.h"
+#include "log_viewer/kube.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -222,7 +223,24 @@ static bool scan_directory(SourceSet *set, const char *path, bool remember) {
   return success;
 }
 
+bool source_set_contains(const SourceSet *set, size_t scope, size_t source) {
+  if (scope == SIZE_MAX || scope == source) return true;
+  if (scope < SOURCE_GROUP_BASE || scope - SOURCE_GROUP_BASE >= set->group_count) return false;
+
+  const SourceGroup *group = &set->groups[scope - SOURCE_GROUP_BASE];
+  for (size_t i = 0; i < group->count; i++)
+    if (group->members[i] == source) return true;
+  return false;
+}
+
 void source_set_close(SourceSet *set) {
+  kube_close(set);
+  for (size_t i = 0; i < set->group_count; i++) {
+    free(set->groups[i].name);
+    free(set->groups[i].uid);
+    free(set->groups[i].members);
+  }
+  free(set->groups);
   for (size_t i = 0; i < set->count; i++) {
     source_close(&set->entries[i].source);
     free(set->entries[i].path);
@@ -267,7 +285,7 @@ SourceOpenResult source_set_open(SourceSet *set, const char *const *paths, size_
 
   clock_gettime(CLOCK_MONOTONIC, &set->refreshed);
   set->initial = set->loading = set->count > 0;
-  set->eof = !set->count;
+  set->eof = !set->count && !set->target_count;
 
   return SOURCE_OPENED;
 }
@@ -277,6 +295,10 @@ SourceOpenResult source_set_open_inputs(SourceSet *set, const InputSpec *inputs,
 
   *set = (SourceSet){ 0 };
   for (size_t i = 0; i < count; i++) {
+    if (inputs[i].kind == INPUT_KUBE_DEPLOYMENT || inputs[i].kind == INPUT_KUBE_POD) {
+      if (!kube_add_target(set, &inputs[i])) return SOURCE_OPEN_ERROR;
+      continue;
+    }
     if (inputs[i].kind == INPUT_PATH) {
       const char *path = inputs[i].value;
       struct stat identity;
@@ -315,12 +337,13 @@ SourceOpenResult source_set_open_inputs(SourceSet *set, const InputSpec *inputs,
 
   clock_gettime(CLOCK_MONOTONIC, &set->refreshed);
   set->initial = set->loading = set->count > 0;
-  set->eof = !set->count;
+  set->eof = !set->count && !set->target_count;
   return SOURCE_OPENED;
 }
 
 bool source_set_poll(SourceSet *set, LogStore *store, bool follow, size_t *changed) {
   *changed = SIZE_MAX;
+  if (!kube_poll(set, follow)) return false;
   set->cycle_complete = !set->count;
 
   struct timespec now;
@@ -358,7 +381,7 @@ bool source_set_poll(SourceSet *set, LogStore *store, bool follow, size_t *chang
     }
   }
 
-  set->eof = true;
+  set->eof = !set->kube_pending;
   bool loading = false;
 
   for (size_t i = 0; i < set->count; i++) {

@@ -1,4 +1,5 @@
 #include "log_viewer/source.h"
+#include "log_viewer/kube.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -7,16 +8,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <spawn.h>
 #include <signal.h>
 #include <sys/wait.h>
-
-extern char **environ;
 
 static bool poll_stream(LogSource *source, LogStore *store, bool follow, size_t *changed_from);
 static bool capture_diagnostic(LogSource *source, LogStore *store, const char *message, size_t *changed);
 
 void source_close(LogSource *source) {
+  if (source->kube) kube_reader_close(source);
   if (source->child > 0) {
     kill(source->child, SIGKILL);
     while (waitpid(source->child, nullptr, 0) < 0 && errno == EINTR) {}
@@ -107,14 +106,7 @@ static bool start_process(LogSource *source, bool follow) {
   fcntl(output[0], F_SETFD, FD_CLOEXEC);
   fcntl(output[1], F_SETFD, FD_CLOEXEC);
 
-  posix_spawn_file_actions_t actions;
-  int error = posix_spawn_file_actions_init(&actions);
-
-  if (error) goto failed;
-
-  error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-  if (!error) error = posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
-  if (!error) error = posix_spawn_file_actions_adddup2(&actions, output[1], STDERR_FILENO);
+  int error = 0;
 
   bool resolve = !*source->container_id;
   char *inspect[] = { "docker", "container", "inspect", "--format", "{{.Id}}", "--", (char *)source->container, nullptr };
@@ -123,10 +115,8 @@ static bool start_process(LogSource *source, bool follow) {
     nullptr
   };
 
-  if (!error) error = posix_spawnp(&source->child, "docker", &actions, nullptr, resolve ? inspect : logs, environ);
-  posix_spawn_file_actions_destroy(&actions);
+  if (!process_spawn(&source->child, resolve ? inspect : logs, output[1], output[1])) error = errno;
 
-failed:
   close(output[1]);
   if (error) {
     close(output[0]);
@@ -410,5 +400,9 @@ bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *change
     if (!source->buffer) return false;
   }
 
+  if (source->kube) return kube_reader_poll(source, store, follow, changed_from);
+
   return managed_poll(source, store, follow, changed_from);
 }
+
+bool source_poll_stream(LogSource *source, LogStore *store, bool follow, size_t *changed) { return poll_stream(source, store, follow, changed); }

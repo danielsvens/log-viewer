@@ -1,4 +1,5 @@
 #include "log_viewer/source_tree.h"
+#include "log_viewer/source_set.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -37,10 +38,36 @@ static bool append_row(SourceTree *tree, SourceTreeRow row) {
   return true;
 }
 
+static bool append_group(SourceTree *tree, Search *search, size_t group, size_t depth, size_t count, size_t groups) {
+  size_t parent;
+  const char *name = search_group_name(search, group, &parent);
+  if (!append_row(tree, (SourceTreeRow){ name, strlen(name), depth, SOURCE_GROUP_BASE + group, false })) return false;
+
+  bool children = false;
+  for (size_t i = 0; i < groups; i++) {
+    size_t p;
+    search_group_name(search, i, &p);
+    if (p != group) continue;
+    children = true;
+    if (!append_group(tree, search, i, depth + 1, count, groups)) return false;
+  }
+  if (!children) {
+    for (size_t i = 0; i < count; i++) {
+      if (!search_scope_contains(search, SOURCE_GROUP_BASE + group, i)) continue;
+      const char *path = search_source_name(search, i);
+      const char *leaf = strrchr(path, '/');
+      leaf = leaf ? leaf + 1 : path;
+      if (!append_row(tree, (SourceTreeRow){ leaf, strlen(leaf), depth + 1, i, false })) return false;
+    }
+  }
+  return true;
+}
+
 bool source_tree_sync(SourceTree *tree, Search *search) {
   size_t count = search_source_count(search);
 
-  if (tree->count && tree->sources == count) return true;
+  size_t revision = search_registry_revision(search);
+  if (tree->count && tree->sources == revision) return true;
   if (count > SIZE_MAX / sizeof(TreeFile) - 1) {
     errno = ENOMEM;
     return false;
@@ -50,7 +77,15 @@ bool source_tree_sync(SourceTree *tree, Search *search) {
 
   if (!files) return false;
 
-  for (size_t i = 0; i < count; i++) files[i] = (TreeFile){ search_source_name(search, i), i };
+  size_t total = count;
+  count = 0;
+  for (size_t i = 0; i < total; i++) {
+    const char *name = search_source_name(search, i);
+    bool grouped = false;
+    for (size_t g = 0; !grouped && g < search_group_count(search); g++) grouped = search_scope_contains(search, SOURCE_GROUP_BASE + g, i);
+    if (grouped) continue;
+    files[count++] = (TreeFile){ name, i };
+  }
 
   qsort(files, count, sizeof(*files), compare_files);
 
@@ -94,9 +129,17 @@ bool source_tree_sync(SourceTree *tree, Search *search) {
     if (files[i].source == cursor_source) tree->cursor = tree->count - 1;
   }
 
+  size_t groups = search_group_count(search);
+  for (size_t i = 0; success && i < groups; i++) {
+    size_t parent;
+    search_group_name(search, i, &parent);
+    if (parent == SIZE_MAX) success = append_group(tree, search, i, 0, total, groups);
+  }
+  for (size_t i = 0; i < tree->count; i++)
+    if (!tree->rows[i].directory && tree->rows[i].source == cursor_source) tree->cursor = i;
   free(files);
 
-  if (success) tree->sources = count;
+  if (success) tree->sources = revision;
 
   return success;
 }

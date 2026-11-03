@@ -233,3 +233,67 @@ own test containers):
 ```sh
 DOCKER_SMOKE_IMAGE=alpine:latest python3 tests/docker_smoke.py
 ```
+
+## Kubernetes logs
+
+Install `kubectl` and configure access to the desired context. The viewer needs read
+access to the attached deployments, relevant ReplicaSets and pods, and pod logs.
+It uses the installed CLI; it does not open a network listener or manage workloads.
+
+```sh
+log-viewer --kube deployment/api
+log-viewer --kube deployment/api --kube deployment/worker
+log-viewer --kube pod/api-7d8c9-abcde
+log-viewer --kube deployment/api application.log
+log-viewer --kube deployment/api --kube-namespace production
+log-viewer --kube deployment/api --kube-context staging --kube-tail all
+```
+
+`deploy/NAME` is an alias for `deployment/NAME`. Targets must name a deployment or
+pod explicitly. Kubernetes, Docker, files, directories, and explicit stdin (`-`)
+can be combined. `--kube-context` and `--kube-namespace` apply to every Kubernetes
+target; omitted settings are resolved from kubectl configuration once and pinned
+for the session. `--kube-tail N|all` defaults to 1,000 lines per regular container,
+accepts zero, and is independent of `--docker-tail`. Sidecars in `spec.containers`
+are included; init and ephemeral containers are excluded.
+
+The source tree has selectable deployment and pod groups with individual container
+streams beneath them. Deployment selection includes captured history and newly
+discovered replicas; pod selection includes all its containers. Filesystem directory
+headings keep their existing behavior. Queries, tabs, inspector, clipboard, and
+on-disk storage work with these scopes.
+
+Discovery polls every two seconds and verifies controller ownership through
+Deployment → ReplicaSet → Pod UIDs, including old and new ReplicaSets during a
+rollout. Deployment and direct pod identities are pinned: deleting and recreating
+a target under the same name does not replace the attachment. Overlapping inputs
+share ingestion by context, namespace, pod UID, and container. Waiting pods and
+zero-replica deployments remain visible, and removed pods retain captured history.
+Failed discovery never removes existing history.
+
+Discovery failures and disconnected readers retry after 1, 2, 4, 8, 16, then 30
+seconds. Successful discovery or 30 seconds of healthy streaming resets backoff.
+`R` refreshes targets and immediately retries disconnected sources in the selected
+scope; it is ignored as a command in editors and modals. Completed containers and
+confirmed removed pods do not trigger repeated automatic log requests. Restarted
+containers append to their existing source, preserving record IDs and separating
+partial records between attempts.
+
+Reconnections replay the configured tail and show a **duplicates possible** notice.
+Repeated messages are not deduplicated, delivery may have gaps, and `--previous`
+logs are never fetched automatically. Each reader verifies the pod UID immediately
+before launching `kubectl logs`; because kubectl addresses logs by pod name, this
+check and the log request cannot be atomic. Avoid deleting and recreating pods
+while attaching if that race is material to your use case.
+
+`--dump` performs one discovery snapshot, fetches current container history without
+following or retrying, drains every reader, and exits. Zero replicas is successful;
+unavailable containers or failed discovery produce a nonzero result after other
+sources finish. Metadata requests have a ten-second timeout. Diagnostics are kept
+separate from container log records.
+
+Run `python3 tests/kube_test.py` for fake kubectl integration and terminal checks,
+or `make test` to also cover dynamic group selection and search caches. An opt-in
+live test is available via `python3 tests/kube_smoke.py` with `KUBE_SMOKE=1`,
+`KUBE_SMOKE_NAMESPACE`, and `KUBE_SMOKE_IMAGE` set (`KUBE_SMOKE_CONTEXT` is optional).
+It creates and removes a disposable deployment in the selected test namespace.
