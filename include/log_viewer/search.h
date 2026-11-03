@@ -18,6 +18,7 @@ typedef struct {
   uint64_t revision;
   bool searching, eof, cached;
   int error;
+  bool connector_failed;
 } SearchStatus;
 
 typedef struct {
@@ -28,6 +29,10 @@ typedef struct {
 
 SourceOpenResult search_open(Search **search, const char *path, const char *expression, bool follow);
 SourceOpenResult search_open_paths(Search **search, const char *const *paths, size_t count, const char *expression, bool follow);
+/* Input values and tail must remain valid until search_close(). */
+SourceOpenResult search_open_inputs(Search **search, const InputSpec *inputs, size_t count, const char *tail, const char *expression, bool follow);
+void search_reconnect(Search *search);
+const char *search_source_status(Search *search, size_t source);
 void search_close(Search *search);
 void search_request(Search *search, const char *expression);
 /* Replace query, source, and levels together, cancelling the previous search. */

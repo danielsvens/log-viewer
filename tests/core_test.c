@@ -8,6 +8,8 @@
 #include "log_viewer/text.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -883,7 +885,91 @@ static void test_cached_search_budget(void) {
   unlink(path);
 }
 
+static void test_docker_reconnect(void) {
+  char directory[] = "/tmp/log-viewer-docker-test-XXXXXX";
+  assert(mkdtemp(directory));
+  char executable[256];
+  snprintf(executable, sizeof(executable), "%s/docker", directory);
+  FILE *script = fopen(executable, "w");
+  assert(script);
+  assert(
+      fputs(
+          "#!/bin/sh\nif [ \"$1\" = container ]; then\n"
+          " printf '%064d\\n' 0\nelse\n"
+          " if [ -n \"$DOCKER_TEST_BLOCK\" ]; then exec /bin/sleep 60; fi\n"
+          " printf 'first\\n'\n printf 'last' >&2\nfi\n",
+          script
+      ) >= 0
+  );
+  assert(fclose(script) == 0);
+  assert(chmod(executable, 0700) == 0);
+
+  char *previous = text_copy(getenv("PATH"));
+  assert(previous && setenv("PATH", directory, 1) == 0);
+  InputSpec input = { INPUT_DOCKER, "--unsafe;name" };
+  Search *search = nullptr;
+  assert(search_open_inputs(&search, &input, 1, "1000", "", true) == SOURCE_OPENED);
+  wait_for_counts(search, 2, 2);
+  for (size_t i = 0; i < 5000 && !search_status(search).eof; i++) usleep(1000);
+  assert(search_status(search).eof && !search_status(search).connector_failed);
+  assert(strstr(search_source_status(search, 0), "stopped"));
+
+  search_request(search, "last");
+  wait_for_counts(search, 2, 1);
+  search_reconnect(search);
+  wait_for_counts(search, 4, 2);
+  assert(strstr(search_source_status(search, 0), "duplicates possible"));
+
+  RecordReader reader = { 0 };
+  TextBuffer buffer = { 0 };
+  LogRecord record;
+  assert(search_read_result(search, 1, &reader, &buffer, &record, 0) == 1);
+  assert(record.id == 4 && !strcmp(record.text, "last"));
+  record_reader_destroy(&reader);
+  text_buffer_destroy(&buffer);
+  search_close(search);
+
+  InputSpec pair[] = { { INPUT_DOCKER, "api" }, { INPUT_DOCKER, "worker" } };
+  assert(search_open_inputs(&search, pair, 2, "all", "", true) == SOURCE_OPENED);
+  wait_for_counts(search, 4, 4);
+  search_select_source(search, 0);
+  wait_for_counts(search, 4, 2);
+  search_reconnect(search);
+  wait_for_counts(search, 6, 4);
+  assert(!strstr(search_source_status(search, 1), "replayed"));
+  search_select_source(search, SEARCH_ALL_SOURCES);
+  wait_for_counts(search, 6, 6);
+  search_reconnect(search);
+  wait_for_counts(search, 10, 10);
+  assert(strstr(search_source_status(search, 1), "replayed"));
+  search_close(search);
+
+  assert(setenv("DOCKER_TEST_BLOCK", "1", 1) == 0);
+  LogSource source;
+  LogStore store;
+  log_store_init(&store);
+  assert(source_open_docker(&source, "docker:cleanup", "cleanup", "0") == SOURCE_OPENED);
+  for (size_t i = 0; i < 5000 && source.connection != CONNECTION_RUNNING; i++) {
+    size_t changed;
+    assert(source_poll(&source, &store, true, &changed));
+    usleep(1000);
+  }
+  assert(source.connection == CONNECTION_RUNNING && source.child > 0);
+  pid_t child = source.child;
+  source_close(&source);
+  assert(waitpid(child, nullptr, WNOHANG) == -1 && errno == ECHILD);
+  assert(kill(child, 0) == -1 && errno == ESRCH);
+  log_store_destroy(&store);
+  unsetenv("DOCKER_TEST_BLOCK");
+
+  assert(setenv("PATH", previous, 1) == 0);
+  free(previous);
+  unlink(executable);
+  rmdir(directory);
+}
+
 int main(void) {
+  test_docker_reconnect();
   test_cached_search_refresh();
   test_cached_search_budget();
   test_level_filter_history_and_sources();

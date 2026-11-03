@@ -28,6 +28,7 @@ typedef struct {
 
 /* Initialize once; close even when opening fails, to release any earlier inputs. */
 SourceOpenResult source_set_open(SourceSet *set, const char *const *paths, size_t count);
+SourceOpenResult source_set_open_inputs(SourceSet *set, const InputSpec *inputs, size_t count, const char *tail);
 void source_set_close(SourceSet *set);
 bool source_set_poll(SourceSet *set, LogStore *store, bool follow, size_t *changed);
 

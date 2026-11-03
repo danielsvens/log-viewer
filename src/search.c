@@ -417,7 +417,8 @@ static void *search_worker(void *context) {
   return nullptr;
 }
 
-SourceOpenResult search_open_paths(Search **output, const char *const *paths, size_t count, const char *expression, bool follow) {
+static SourceOpenResult
+open_inputs(Search **output, const char *const *paths, const InputSpec *inputs, size_t count, const char *tail, const char *expression, bool follow) {
   *output = nullptr;
 
   Search *search = calloc(1, sizeof(*search));
@@ -446,7 +447,7 @@ SourceOpenResult search_open_paths(Search **output, const char *const *paths, si
     return SOURCE_OPEN_ERROR;
   }
 
-  SourceOpenResult opened = source_set_open(&search->sources, paths, count);
+  SourceOpenResult opened = inputs ? source_set_open_inputs(&search->sources, inputs, count, tail) : source_set_open(&search->sources, paths, count);
 
   if (opened != SOURCE_OPENED) {
     int saved = errno;
@@ -471,6 +472,58 @@ SourceOpenResult search_open_paths(Search **output, const char *const *paths, si
   *output = search;
 
   return SOURCE_OPENED;
+}
+
+SourceOpenResult search_open_paths(Search **output, const char *const *paths, size_t count, const char *expression, bool follow) {
+  return open_inputs(output, paths, nullptr, count, "1000", expression, follow);
+}
+
+SourceOpenResult search_open_inputs(Search **output, const InputSpec *inputs, size_t count, const char *tail, const char *expression, bool follow) {
+  return open_inputs(output, nullptr, inputs, count, tail, expression, follow);
+}
+
+void search_reconnect(Search *search) {
+  pthread_mutex_lock(&search->mutex);
+  for (size_t i = 0; i < search->sources.count; i++) {
+    LogSource *source = &search->sources.entries[i].source;
+    if (search->requested_source != SEARCH_ALL_SOURCES && search->requested_source != i) continue;
+    if (source->managed && (source->connection == CONNECTION_ERROR || source->connection == CONNECTION_STOPPED)) source->reconnect = true;
+  }
+  pthread_cond_signal(&search->wake);
+  pthread_mutex_unlock(&search->mutex);
+}
+
+const char *search_source_status(Search *search, size_t id) {
+  const char *status = "";
+  pthread_mutex_lock(&search->mutex);
+  if (id < search->sources.count) {
+    LogSource *source = &search->sources.entries[id].source;
+    if (source->managed) {
+      switch (source->connection) {
+      case CONNECTION_PENDING:
+        status = "connecting";
+        break;
+      case CONNECTION_RESOLVING:
+        status = "resolving";
+        break;
+      case CONNECTION_RUNNING:
+        status = "following";
+        break;
+      case CONNECTION_STOPPED:
+        status = "stopped; R reconnect";
+        break;
+      case CONNECTION_ERROR:
+        status = "error; R reconnect";
+        break;
+      }
+      if (source->replayed)
+        status = source->connection == CONNECTION_ERROR     ? "error; history replayed, duplicates possible"
+                 : source->connection == CONNECTION_STOPPED ? "stopped; history replayed, duplicates possible"
+                                                            : "history replayed, duplicates possible";
+    }
+  }
+  pthread_mutex_unlock(&search->mutex);
+  return status;
 }
 
 SourceOpenResult search_open(Search **output, const char *path, const char *expression, bool follow) {
@@ -593,7 +646,12 @@ static SearchStatus status_locked(Search *search) {
 
   bool cached = has_preview(search);
 
-  return (SearchStatus){ .cached = cached,
+  bool connector_failed = false;
+  for (size_t i = 0; i < search->sources.count; i++)
+    connector_failed |= search->sources.entries[i].source.managed && search->sources.entries[i].source.connection == CONNECTION_ERROR;
+
+  return (SearchStatus){ .connector_failed = connector_failed,
+                         .cached = cached,
                          .reused = current ? search->reused : 0,
                          .cache_bytes = search->cache_bytes + snapshot_bytes(&search->preview),
                          .count = search->store.count,

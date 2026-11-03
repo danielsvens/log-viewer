@@ -1,7 +1,34 @@
-Usage: log-viewer [--filter QUERY] [--dump] [--levels LIST] [FILE|DIRECTORY|-]...
-Pipe logs, follow multiple files, or recursively open directories. / filters, Enter details, ? help, q quit.
---dump prints matching lines without the TUI (until EOF).
-Directories read regular files in sorted traversal order and discover new files.
--- ends options; use - to include stdin alongside files.
---levels selects error,warn,info,debug,unknown (comma-separated), or all/none.
-Keys 1-5 toggle those groups; 0 restores all levels.
+Usage: log-viewer [OPTIONS] [FILE|DIRECTORY|-]...
+
+Follow logs from files, directories, stdin, or Docker containers.
+
+Inputs
+  FILE                   Read a file and follow new output.
+  DIRECTORY              Read files recursively and discover new files.
+  -                      Read stdin; combine with other inputs.
+  --docker CONTAINER     Attach container stdout/stderr. Repeat for more containers.
+
+Options
+  --filter QUERY         Start with a text, regex, or JSON field filter.
+  --levels LIST          Select error,warn,info,debug,unknown, or all/none.
+  --docker-tail N|all     History per container (default: 1000; 0 is valid).
+  --dump                 Print matching history without the TUI, then exit.
+  --help                 Show this help.
+  --                     Treat remaining arguments as file or directory paths.
+
+Examples
+  log-viewer application.log
+  log-viewer logs/ --filter '~error|warn'
+  command | log-viewer - application.log
+  log-viewer --docker api --docker worker
+  log-viewer --docker api --docker-tail all --dump
+
+Keyboard
+  / filter    Enter inspect    Tab sources/logs    ? help    q quit
+  1-5 toggle levels    0 all levels    R reconnect Docker sources
+
+Docker
+  Requires the Docker CLI and access to the current Docker context.
+  Follows new output unless --dump is used. Stopped sources retain history.
+  R reconnects the selected source, or all disconnected sources in All sources.
+  Reconnect replays the configured tail; duplicate records are possible.

@@ -194,3 +194,42 @@ quoting, and limits.
 Application source is licensed under [GNU GPLv3](LICENSE) (`GPL-3.0-only`).
 Sheredom’s bundled [JSON header](include/json.h) is under the Unlicense.
 Copyright (c) 2026 log-viewer contributors.
+
+### Docker container logs
+
+Use the installed Docker CLI and your current Docker context (with authorized daemon
+access) to read container stdout/stderr through Docker's logging interface:
+
+```sh
+lv --docker my-container
+lv --docker api --docker worker
+lv --docker api application.log
+lv --docker api --docker-tail all
+lv --docker api --docker-tail 5000
+```
+
+The default is the last **1,000 lines**, followed by new output. `--docker-tail N|all`
+applies to every Docker source; nonnegative integers including `0` are accepted.
+Combine Docker with files, directories, and explicit stdin (`-`). `--dump` reads the
+configured history without following and exits nonzero if any connector fails,
+after printing captured output.
+
+Each container appears separately in the source tree. Filters, tabs, inspector,
+clipboard, and cached queries work on the captured history. Stopped or failed sources
+retain their history while other sources continue. Press **R** to reconnect the
+selected Docker source, or every disconnected Docker source in “All sources”.
+Reconnect appends the configured tail and displays a replay notice: duplicates are
+possible and are retained. Reconnect uses the resolved full container ID, so a new
+container reusing the name is never silently substituted.
+
+The viewer only manages its own Docker log-reader processes; it never stops or
+restarts containers. No sudo, automatic reconnect, Kubernetes connector, JVM debug
+connection, or listening port is involved. IntelliJ still uses saved console files.
+
+The default tests fake Docker and do not need a daemon. Optional live smoke test
+(requires an installed image containing `sh` and `sleep`, and creates/removes its
+own test containers):
+
+```sh
+DOCKER_SMOKE_IMAGE=alpine:latest python3 tests/docker_smoke.py
+```

@@ -215,6 +215,10 @@ static void render_tree(Tui *tui, Search *search, int height, int width) {
     size_t length = row.length < sizeof(label) - 1 ? row.length : sizeof(label) - 1;
     memcpy(label, row.name, length);
     label[length] = 0;
+    if (!row.directory) {
+      const char *status = search_source_status(search, row.source);
+      if (*status) snprintf(label + length, sizeof(label) - length, " [%s]", status);
+    }
 
     paint_text((int)i + 2, (int)indent, width - (int)indent - 2, label, 0, focused, LOG_LEVEL_UNKNOWN);
   }
@@ -341,6 +345,16 @@ static void render_status(Search *search, const LogView *view, const Query *quer
         levels & (1u << (unsigned int)LOG_LEVEL_DEBUG) ? '+' : '-',
         levels & (1u << (unsigned int)LOG_LEVEL_UNKNOWN) ? '+' : '-'
     );
+  }
+
+  size_t selected = search_selected_source(search);
+  for (size_t i = 0; i < search_source_count(search); i++) {
+    if (selected != SEARCH_ALL_SOURCES && selected != i) continue;
+    const char *status = search_source_status(search, i);
+    if (*status && (selected != SEARCH_ALL_SOURCES || strstr(status, "replayed") || strstr(status, "error") || strstr(status, "stopped"))) {
+      snprintf(text, sizeof(text), "%s: %s", search_source_name(search, i), status);
+      break;
+    }
   }
 
   attrset(COLOR_PAIR(TUI_HEADER));

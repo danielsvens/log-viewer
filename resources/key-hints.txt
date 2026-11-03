@@ -1,1 +1,1 @@
-t new tab  Shift-arrows tabs  x close tab  Tab sources/logs  / filter  Enter inspect  ? help  q quit
+t new tab  Shift-arrows tabs  x close tab  Tab sources/logs  R reconnect  / filter  Enter inspect  ? help  q quit

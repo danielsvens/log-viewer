@@ -387,3 +387,51 @@ with tempfile.TemporaryDirectory() as directory:
     finally:
         terminal.close()
 print('Filter tabs, shared live indexing, switching, closure, and narrow tab bars passed.')
+
+# Docker history survives disconnect; R is inactive in editors and modals.
+with tempfile.TemporaryDirectory() as directory:
+    from pathlib import Path
+    fake = Path(directory) / 'docker'
+    calls = Path(directory) / 'calls'
+    fake.write_text('''#!/usr/bin/env python3
+import os, sys
+if sys.argv[1:3] == ['container', 'inspect']:
+    marker = os.environ['DOCKER_TUI_CALLS'] + '.inspect'
+    print(('c' if os.path.exists(marker) else 'b') * 64)
+    open(marker, 'w').close()
+else:
+    assert sys.argv[1:] == ['logs', '--tail', '1000', '--follow', '--', 'b' * 64]
+    with open(os.environ['DOCKER_TUI_CALLS'], 'a') as stream:
+        stream.write('logs\\n')
+    print('DOCKER_RETAINED_HISTORY')
+    print('DOCKER_PARTIAL', end='')
+''')
+    fake.chmod(0o700)
+    old_path = os.environ['PATH']
+    os.environ['PATH'] = directory + os.pathsep + old_path
+    os.environ['DOCKER_TUI_CALLS'] = str(calls)
+    try:
+        terminal = Terminal(['--docker', 'api'])
+    finally:
+        os.environ['PATH'] = old_path
+        del os.environ['DOCKER_TUI_CALLS']
+    try:
+        screen = terminal.wait_for(b'stopped')
+        assert b'DOCKER_RETAINED_HISTORY' in screen and b'DOCKER_PARTIAL' in screen, screen
+        assert calls.read_text().splitlines() == ['logs']
+        terminal.key(b'/R')
+        assert calls.read_text().splitlines() == ['logs']
+        terminal.key(b'\x1b?R')
+        assert calls.read_text().splitlines() == ['logs']
+        terminal.key(b'q')
+        screen = terminal.key(b'R')
+        if b'duplicates possible' not in screen:
+            screen += terminal.wait_for(b'duplicates possible')
+        assert calls.read_text().splitlines() == ['logs', 'logs']
+        screen = terminal.key(b'/DOCKER_PARTIAL\r')
+        detail = terminal.key(b'gg\r')
+        assert b'DOCKER_PARTIAL' in detail, detail
+        terminal.key(b'q')
+    finally:
+        terminal.close()
+print('Docker retained history, immutable IDs, replay notices, and modal/editor reconnect handling passed.')

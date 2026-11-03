@@ -7,8 +7,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <spawn.h>
+#include <signal.h>
+#include <sys/wait.h>
+
+extern char **environ;
+
+static bool poll_stream(LogSource *source, LogStore *store, bool follow, size_t *changed_from);
+static bool capture_diagnostic(LogSource *source, LogStore *store, const char *message, size_t *changed);
 
 void source_close(LogSource *source) {
+  if (source->child > 0) {
+    kill(source->child, SIGKILL);
+    while (waitpid(source->child, nullptr, 0) < 0 && errno == EINTR) {}
+  }
+
   if (source->fd >= 0) {
     if (source->file) close(source->fd);
     else if (source->original_flags >= 0) fcntl(source->fd, F_SETFL, source->original_flags);
@@ -71,6 +84,148 @@ error:
   errno = error;
 
   return SOURCE_OPEN_ERROR;
+}
+
+SourceOpenResult source_open_docker(LogSource *source, const char *name, const char *container, const char *tail) {
+  *source = (LogSource){ .fd = -1, .spool_fd = -1, .original_flags = -1, .file = true, .managed = true, .path = name, .container = container, .tail = tail };
+
+  char temporary[] = "/tmp/log-viewer-docker-XXXXXX";
+  source->spool_fd = mkstemp(temporary);
+
+  if (source->spool_fd < 0) return SOURCE_OPEN_ERROR;
+
+  unlink(temporary);
+  fcntl(source->spool_fd, F_SETFD, FD_CLOEXEC);
+
+  return SOURCE_OPENED;
+}
+
+static bool start_process(LogSource *source, bool follow) {
+  int output[2];
+  if (pipe(output) < 0) return false;
+
+  fcntl(output[0], F_SETFD, FD_CLOEXEC);
+  fcntl(output[1], F_SETFD, FD_CLOEXEC);
+
+  posix_spawn_file_actions_t actions;
+  int error = posix_spawn_file_actions_init(&actions);
+
+  if (error) goto failed;
+
+  error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+  if (!error) error = posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
+  if (!error) error = posix_spawn_file_actions_adddup2(&actions, output[1], STDERR_FILENO);
+
+  bool resolve = !*source->container_id;
+  char *inspect[] = { "docker", "container", "inspect", "--format", "{{.Id}}", "--", (char *)source->container, nullptr };
+  char *logs[] = {
+    "docker", "logs", "--tail", (char *)source->tail, follow ? "--follow" : "--", follow ? "--" : source->container_id, follow ? source->container_id : nullptr,
+    nullptr
+  };
+
+  if (!error) error = posix_spawnp(&source->child, "docker", &actions, nullptr, resolve ? inspect : logs, environ);
+  posix_spawn_file_actions_destroy(&actions);
+
+failed:
+  close(output[1]);
+  if (error) {
+    close(output[0]);
+    source->child = 0;
+    errno = error;
+    return false;
+  }
+
+  source->fd = output[0];
+  fcntl(source->fd, F_SETFL, O_NONBLOCK);
+  source->eof = false;
+  source->connection = resolve ? CONNECTION_RESOLVING : CONNECTION_RUNNING;
+
+  return true;
+}
+
+/* Never wait for a connector while holding up the UI. EOF precedes exit publication. */
+static bool managed_poll(LogSource *source, LogStore *store, bool follow, size_t *changed) {
+  if (source->reconnect) {
+    source->reconnect = false;
+    source->replayed = true;
+    source->connection = CONNECTION_PENDING;
+    source->eof = false;
+
+    source->line_start = source->offset;
+    source->tail_indexed = false;
+
+    source->resolution_length = 0;
+    source->resolution[0] = 0;
+  }
+
+  if (source->connection == CONNECTION_PENDING && !start_process(source, follow)) {
+    int error = errno;
+    source->connection = CONNECTION_ERROR;
+    source->eof = true;
+    return capture_diagnostic(source, store, strerror(error), changed);
+  }
+
+  if (source->connection == CONNECTION_ERROR || source->connection == CONNECTION_STOPPED) return true;
+
+  if (source->connection == CONNECTION_RESOLVING && !source->eof) {
+    char bytes[4096];
+    ssize_t n = read(source->fd, bytes, sizeof(bytes));
+
+    if (n > 0) {
+      size_t available = sizeof(source->resolution) - 1 - source->resolution_length;
+      size_t copy = (size_t)n < available ? (size_t)n : available;
+
+      memcpy(source->resolution + source->resolution_length, bytes, copy);
+      source->resolution_length += copy;
+      source->resolution[source->resolution_length] = 0;
+    } else if (!n) source->eof = true;
+    else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) source->eof = true;
+  } else if (source->connection == CONNECTION_RUNNING && !source->eof) {
+    if (!poll_stream(source, store, follow, changed)) return false;
+  }
+
+  if (!source->eof) return true;
+
+  int status;
+  pid_t ended = waitpid(source->child, &status, WNOHANG);
+
+  if (!ended || (ended < 0 && errno == EINTR)) {
+    source->eof = false;
+    return true;
+  }
+
+  source->child = 0;
+  close(source->fd);
+  source->fd = -1;
+
+  bool success = ended > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+
+  if (source->connection == CONNECTION_RESOLVING && success) {
+    const char *id = source->resolution;
+
+    while (*id) {
+      size_t length = strcspn(id, "\r\n");
+
+      if (length == 64 && strspn(id, "0123456789abcdef") == 64) break;
+      id += length;
+      while (*id == '\r' || *id == '\n') id++;
+    }
+
+    success = *id != 0;
+    if (success) {
+      memcpy(source->container_id, id, 64);
+      source->container_id[64] = 0;
+      source->connection = CONNECTION_PENDING;
+      source->eof = false;
+      return true;
+    }
+  } else if (source->connection == CONNECTION_RUNNING) {
+    source->connection = success ? CONNECTION_STOPPED : CONNECTION_ERROR;
+    return true;
+  }
+
+  source->connection = CONNECTION_ERROR;
+  return capture_diagnostic(source, store, *source->resolution ? source->resolution : "Docker container resolution failed", changed);
 }
 
 static bool refresh_file(LogSource *source, LogStore *store, size_t *changed) {
@@ -169,7 +324,7 @@ static bool index_bytes(LogSource *source, LogStore *store, size_t length) {
   return true;
 }
 
-bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *changed_from) {
+static bool poll_stream(LogSource *source, LogStore *store, bool follow, size_t *changed_from) {
   *changed_from = SIZE_MAX;
 
   if (!source->buffer) {
@@ -225,4 +380,35 @@ bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *change
   if (source->regular && !source->file && lseek(source->fd, (off_t)source->offset, SEEK_SET) < 0) return false;
 
   return true;
+}
+
+static bool capture_diagnostic(LogSource *source, LogStore *store, const char *message, size_t *changed) {
+  if (!source->attached) {
+    if (!log_store_add_file(store, source->spool_fd, &source->segment)) return false;
+    source->attached = true;
+  }
+
+  log_store_select_file(store, source->segment);
+  store->segments[source->segment].source_id = source->source_id;
+  store->segments[source->segment].name = source->path;
+  *changed = store->count;
+  source->line_start = source->offset;
+  source->tail_indexed = false;
+
+  size_t length = strlen(message);
+  memcpy(source->buffer, message, length);
+  source->buffer[length++] = '\n';
+  return spool_bytes(source, length) && index_bytes(source, store, length);
+}
+
+bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *changed_from) {
+  if (!source->managed) return poll_stream(source, store, follow, changed_from);
+
+  *changed_from = SIZE_MAX;
+  if (!source->buffer) {
+    source->buffer = malloc(SOURCE_READ_BYTES);
+    if (!source->buffer) return false;
+  }
+
+  return managed_poll(source, store, follow, changed_from);
 }

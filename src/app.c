@@ -44,7 +44,13 @@ static int run_dump(Search *search) {
       printed++;
     }
 
-    if (result || (status.eof && !status.searching && printed == status.matches)) break;
+    if (result || (status.eof && !status.searching && printed == status.matches)) {
+      if (status.connector_failed) {
+        result = 1;
+        errno = EIO;
+      }
+      break;
+    }
 
     usleep(1000);
   }
@@ -95,7 +101,7 @@ int app_run(const Options *options) {
 
   Search *search = nullptr;
   Tui tui = { 0 };
-  SourceOpenResult opened = search_open_paths(&search, (const char *const *)options->paths, options->path_count, options->filter, !options->dump);
+  SourceOpenResult opened = search_open_inputs(&search, options->inputs, options->input_count, options->docker_tail, options->filter, !options->dump);
 
   if (opened != SOURCE_OPENED) {
     if (opened == SOURCE_INPUT_REQUIRED) fprintf(stderr, "Provide a log file or pipe: command | log-viewer\n");

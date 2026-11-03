@@ -2,12 +2,22 @@
 #define LOG_VIEWER_SOURCE_H
 
 #include <stdint.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #include "log_viewer/log_store.h"
 
 constexpr size_t SOURCE_READ_BYTES = 1024 * 1024;
 
 typedef enum { SOURCE_OPENED, SOURCE_OPEN_ERROR, SOURCE_INPUT_REQUIRED } SourceOpenResult;
+
+typedef enum { INPUT_PATH, INPUT_DOCKER } InputKind;
+
+typedef struct {
+  InputKind kind;
+  const char *value;
+} InputSpec;
+
+typedef enum { CONNECTION_PENDING, CONNECTION_RESOLVING, CONNECTION_RUNNING, CONNECTION_STOPPED, CONNECTION_ERROR } ConnectionState;
 
 typedef struct {
   int fd, original_flags, spool_fd;
@@ -17,9 +27,16 @@ typedef struct {
   uint64_t offset, line_start;
   size_t segment, tail_id, source_id;
   struct stat identity;
+  bool managed, reconnect, replayed;
+  pid_t child;
+  ConnectionState connection;
+  char container_id[65], resolution[256];
+  size_t resolution_length;
+  const char *container, *tail;
 } LogSource;
 
 SourceOpenResult source_open(LogSource *source, const char *path);
+SourceOpenResult source_open_docker(LogSource *source, const char *name, const char *container, const char *tail);
 void source_close(LogSource *source);
 /* changed_from is the earliest changed record, or SIZE_MAX. Mutates only metadata. */
 bool source_poll(LogSource *source, LogStore *store, bool follow, size_t *changed_from);

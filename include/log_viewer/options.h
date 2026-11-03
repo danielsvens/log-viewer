@@ -2,8 +2,12 @@
 #define LOG_VIEWER_OPTIONS_H
 
 #include "log_viewer/log_level.h"
+#include "log_viewer/source.h"
 
 typedef struct {
+  InputSpec *inputs;
+  size_t input_count;
+  const char *docker_tail;
   const char *path;
   char **paths;
   unsigned int path_count;

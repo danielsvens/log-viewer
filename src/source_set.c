@@ -272,6 +272,53 @@ SourceOpenResult source_set_open(SourceSet *set, const char *const *paths, size_
   return SOURCE_OPENED;
 }
 
+SourceOpenResult source_set_open_inputs(SourceSet *set, const InputSpec *inputs, size_t count, const char *tail) {
+  if (!count) return source_set_open(set, nullptr, 0);
+
+  *set = (SourceSet){ 0 };
+  for (size_t i = 0; i < count; i++) {
+    if (inputs[i].kind == INPUT_PATH) {
+      const char *path = inputs[i].value;
+      struct stat identity;
+      SourceOpenResult result;
+
+      if (!strcmp(path, "-")) result = add_source(set, nullptr, nullptr);
+      else if (stat(path, &identity) < 0) return SOURCE_OPEN_ERROR;
+      else if (S_ISDIR(identity.st_mode)) result = scan_directory(set, path, true) ? SOURCE_OPENED : SOURCE_OPEN_ERROR;
+      else result = add_source(set, path, &identity);
+
+      if (result != SOURCE_OPENED) return result;
+      continue;
+    }
+
+    SourceEntry *entries = grow_array(set->entries, &set->capacity, set->count, sizeof(*entries));
+    if (!entries) return SOURCE_OPEN_ERROR;
+    set->entries = entries;
+
+    size_t length = strlen(inputs[i].value) + 8;
+    char *name = malloc(length);
+    if (!name) return SOURCE_OPEN_ERROR;
+    snprintf(name, length, "docker:%s", inputs[i].value);
+
+    LogSource source;
+    if (source_open_docker(&source, name, inputs[i].value, tail) != SOURCE_OPENED) {
+      free(name);
+      return SOURCE_OPEN_ERROR;
+    }
+
+    source.source_id = set->count;
+    set->entries[set->count++] = (SourceEntry){ source, name };
+  }
+
+  set->buffer = malloc(SOURCE_READ_BYTES);
+  if (!set->buffer) return SOURCE_OPEN_ERROR;
+
+  clock_gettime(CLOCK_MONOTONIC, &set->refreshed);
+  set->initial = set->loading = set->count > 0;
+  set->eof = !set->count;
+  return SOURCE_OPENED;
+}
+
 bool source_set_poll(SourceSet *set, LogStore *store, bool follow, size_t *changed) {
   *changed = SIZE_MAX;
   set->cycle_complete = !set->count;

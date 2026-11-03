@@ -231,3 +231,73 @@ large_level_record = json.dumps({'message': 'x' * (1024 * 1024 + 10) + ' needle'
 result = subprocess.run([BIN, '--dump', '--levels', 'error', '--filter', 'needle'],
                         input=large_level_record, text=True, capture_output=True, timeout=10)
 assert result.returncode == 0 and result.stdout == large_level_record + '\n'
+
+# Docker CLI is faked so the default suite needs neither Docker nor a daemon.
+with tempfile.TemporaryDirectory() as directory:
+    docker = os.path.join(directory, 'docker')
+    calls = os.path.join(directory, 'calls')
+    with open(docker, 'w') as script:
+        script.write('''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ['DOCKER_CALLS'], 'a') as out:
+    out.write(json.dumps(args) + '\\n')
+if args[:2] == ['container', 'inspect']:
+    if args[-1] in ('removed', 'daemon'):
+        print('No such container', file=sys.stderr)
+        sys.exit(1)
+    if args[-1] == 'warning':
+        print('Docker warning', file=sys.stderr, flush=True)
+    print('a' * 64)
+else:
+    assert args[-1] == 'a' * 64
+    assert '--follow' not in args
+    if os.environ.get('DOCKER_LARGE'):
+        sys.stdout.write(('large record ' + 'x' * 100 + '\\n') * 20000)
+    print('stdout message', flush=True)
+    print('stderr message', file=sys.stderr, flush=True)
+    sys.stdout.write('partial')
+    sys.exit(int(os.environ.get('DOCKER_FAIL', '0')))
+''')
+    os.chmod(docker, 0o700)
+    env = dict(os.environ, PATH=directory + os.pathsep + os.environ['PATH'], DOCKER_CALLS=calls)
+    import json
+    for tail in ('1000', '0', '5000', 'all'):
+        args = [BIN, '--dump', '--docker', '--option;$(touch injected)']
+        if tail != '1000':
+            args += ['--docker-tail', tail]
+        result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ['stdout message', 'stderr message', 'partial']
+        with open(calls) as file:
+            recorded = [json.loads(line) for line in file]
+        assert recorded[-2] == ['container', 'inspect', '--format', '{{.Id}}', '--', '--option;$(touch injected)']
+        assert recorded[-1] == ['logs', '--tail', tail, '--', 'a' * 64]
+
+    result = subprocess.run([BIN, '--dump', '--docker', 'warning'], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run([BIN, '--dump', '--docker', 'api'], env=dict(env, DOCKER_LARGE='1', DOCKER_FAIL='9'),
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1 and result.stdout.count('large record ') == 20000
+    assert result.stdout.endswith('partial\n')
+
+    for invalid in ('-1', '+1', '', '1.5', 'ALL', '1x'):
+        result = subprocess.run([BIN, '--dump', '--docker', 'api', '--docker-tail', invalid], env=env, capture_output=True)
+        assert result.returncode == 2
+
+    file_path = os.path.join(directory, 'application.log')
+    with open(file_path, 'w') as file:
+        file.write('local message\n')
+    result = subprocess.run([BIN, '--dump', '--docker', 'api', '--docker', 'worker', file_path, '-'],
+                            input='stdin message\n', text=True, env=env, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count('stdout message\n') == 2
+    assert 'local message\n' in result.stdout and 'stdin message\n' in result.stdout
+
+    for failed_env, container in ((dict(env, DOCKER_FAIL='7'), 'api'), (env, 'removed'), (env, 'daemon'), (dict(env, PATH='/nonexistent'), 'api')):
+        result = subprocess.run([BIN, '--dump', '--docker', container, file_path], env=failed_env, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 1
+        assert 'local message\n' in result.stdout
+        if container == 'api' and failed_env.get('DOCKER_FAIL'):
+            assert 'partial\n' in result.stdout
+print('Docker arguments, tail limits, mixed inputs, output draining, and connector failures passed.')

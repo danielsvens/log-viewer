@@ -642,6 +642,7 @@ bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int 
 
   if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
   else if (tui->editing) return handle_filter_key(tui, search, query, key);
+  else if (key == 'R') search_reconnect(search);
   else if (key == 't' || key == KEY_SLEFT || key == KEY_SRIGHT || key == 'x') return handle_tab_key(tui, search, store, query, key);
   else if (key >= '0' && key <= '5') {
     LogLevelMask levels = key == '0' ? LOG_LEVELS_ALL : search_levels(search) ^ (1u << (unsigned int)(key - '1'));

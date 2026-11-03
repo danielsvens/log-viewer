@@ -1,38 +1,49 @@
-Tab            Focus sources / logs
-s              Show / hide source tree
-j/k or arrows  Move selection
-gg / G         First / last log
-Ctrl-d/u       Half page down / up
-f              Toggle live follow
-1/2/3/4        Toggle error / warn / info / debug
-5              Toggle unclassified lines
-0              Show all levels
-h/l            Horizontal scroll
-t              New filter tab
-Shift-Left/Right Previous / next tab
-x              Close tab (keep one)
-/              Edit filter (Enter applies)
-Enter          Inspect / select / apply filter
-a (tree)       Read all sources
-Esc            Cancel filter / close detail
-c              Clear query (levels stay)
-q              Confirm quit / close detail
+Navigation
+  j/k or arrows     Move selection
+  gg / G            First / last log
+  Ctrl-d/u          Half page down / up
+  h/l               Horizontal scroll
+  f                 Toggle live follow
+  Enter             Inspect log / select source
+  q                 Confirm quit / close detail
 
-Filter editor: arrows move caret, Home/End jump,
-Backspace/Delete erase. Esc discards edits.
-Results change only when a valid query is submitted.
+Sources & tabs
+  Tab               Focus sources / logs
+  s                 Show / hide source tree
+  a (tree)          Read all sources
+  R                 Reconnect disconnected Docker sources in this scope
+  t                 New filter tab
+  Shift-Left/Right  Previous / next tab
+  x                 Close tab (keep one)
 
-Inspector: / search, Enter finds, n/N next/previous.
-y copies the entire record. Esc cancels search.
+Filtering
+  /                 Edit filter; Enter applies, Esc discards
+  c                 Clear query (levels stay)
+  1/2/3/4           Toggle error / warn / info / debug
+  5                 Toggle unclassified lines
+  0                 Show all levels
 
-Filters (case-insensitive text or regex):
-connection refused
-~error|warn
+  Editor: arrows move caret, Home/End jump, Backspace/Delete erase.
+  Results change only when a valid query is submitted.
 
-JSON field queries (case-sensitive values):
-json | level == "error"
-json | http.status >= 500
-json | message ~ "error" AND message ~ "500"
-AND before OR; parentheses group conditions.
+Inspector
+  /                 Search within the record; Enter finds
+  n / N             Next / previous match
+  y                 Copy the entire record
+  Esc               Cancel search / close detail
 
-All indexed history retained; streams use temporary disk storage.
+Query examples
+  connection refused
+  ~error|warn
+  json | level == "error"
+  json | http.status >= 500
+  json | message ~ "error" AND message ~ "500"
+
+  Text and regex are case-insensitive; JSON values are case-sensitive.
+  AND before OR; parentheses group conditions.
+
+History & Docker
+  All indexed history is retained; streams use temporary disk storage.
+  Docker reconnect replays the configured tail; duplicates are possible.
+
+Help: arrows / Page Up / Page Down scroll; q or Esc closes.
