@@ -136,26 +136,34 @@ static JsonFieldResult field_span(JsonWorkspace *workspace, struct json_value_s 
 
   field->number = value->type == json_type_number;
 
-  if (value->type == json_type_string) {
+  switch (value->type) {
+  case json_type_string: {
     struct json_string_s *string = value->payload;
 
     field->text = string->string;
     field->length = string->string_size;
-  } else if (field->number) {
+    break;
+  }
+  case json_type_number: {
     struct json_number_s *number = value->payload;
 
     field->text = number->number;
     field->length = number->number_size;
-  } else if (value->type == json_type_true) {
+    break;
+  }
+  case json_type_true:
     field->text = "true";
     field->length = 4;
-  } else if (value->type == json_type_false) {
+    break;
+  case json_type_false:
     field->text = "false";
     field->length = 5;
-  } else if (value->type == json_type_null) {
+    break;
+  case json_type_null:
     field->text = "null";
     field->length = 4;
-  } else {
+    break;
+  default:
     free(workspace->serialized);
     workspace->serialized = json_write_minified(value, nullptr);
 

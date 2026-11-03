@@ -594,7 +594,13 @@ static void handle_tree_key(Tui *tui, Search *search, LogView *view, int key) {
 
   case 4:
   case KEY_NPAGE:
-    tree->cursor = tree->count && page < tree->count - tree->cursor ? tree->cursor + page : (tree->count ? tree->count - 1 : 0);
+    if (!tree->count) {
+      tree->cursor = 0;
+      break;
+    }
+
+    if (page < tree->count - tree->cursor) tree->cursor += page;
+    else tree->cursor = tree->count - 1;
     break;
 
   case 21:
@@ -637,28 +643,71 @@ static void handle_tree_key(Tui *tui, Search *search, LogView *view, int key) {
   }
 }
 
+static void toggle_level(Tui *tui, Search *search, int key) {
+  LogLevelMask levels = LOG_LEVELS_ALL;
+
+  if (key != '0') levels = search_levels(search) ^ (1u << (unsigned int)(key - '1'));
+
+  search_set_levels(search, levels);
+  tui->top = 0;
+  tui->restoring_tab = false;
+  tui->pending_g = false;
+}
+
+static bool is_tree_navigation_key(int key) {
+  switch (key) {
+  case 'q':
+  case '?':
+  case '/':
+  case 'c':
+    return false;
+  default:
+    return true;
+  }
+}
+
 bool tui_handle_key(Tui *tui, Search *search, LogView *store, Query *query, int key) {
   if (key == ERR) return true;
 
-  if (tui->overlay != OVERLAY_NONE) handle_overlay_key(tui, key);
-  else if (tui->editing) return handle_filter_key(tui, search, query, key);
-  else if (key == 'R') search_reconnect(search);
-  else if (key == 't' || key == KEY_SLEFT || key == KEY_SRIGHT || key == 'x') return handle_tab_key(tui, search, store, query, key);
-  else if (key >= '0' && key <= '5') {
-    LogLevelMask levels = key == '0' ? LOG_LEVELS_ALL : search_levels(search) ^ (1u << (unsigned int)(key - '1'));
-    search_set_levels(search, levels);
-    tui->top = 0;
-    tui->restoring_tab = false;
-    tui->pending_g = false;
-  } else if (key == '\t') {
+  /* Modal and editor input takes precedence over global shortcuts. */
+  if (tui->overlay != OVERLAY_NONE) {
+    handle_overlay_key(tui, key);
+    return true;
+  }
+
+  if (tui->editing) return handle_filter_key(tui, search, query, key);
+
+  if (key >= '0' && key <= '5') {
+    toggle_level(tui, search, key);
+    return true;
+  }
+
+  switch (key) {
+  case 'R':
+    search_reconnect(search);
+    return true;
+  case 't':
+  case KEY_SLEFT:
+  case KEY_SRIGHT:
+  case 'x':
+    return handle_tab_key(tui, search, store, query, key);
+  case '\t':
     tui->tree_visible = true;
     tui->tree_focus = !tui->tree_focus;
     tui->pending_g = false;
-  } else if (key == 's') {
+    return true;
+  case 's':
     tui->tree_visible = !tui->tree_visible;
     if (!tui->tree_visible) tui->tree_focus = false;
-  } else if (tui->tree_focus && key != 'q' && key != '?' && key != '/' && key != 'c') handle_tree_key(tui, search, store, key);
-  else return handle_navigation_key(tui, search, store, query, key);
+    return true;
+  default:
+    break;
+  }
 
-  return true;
+  if (tui->tree_focus && is_tree_navigation_key(key)) {
+    handle_tree_key(tui, search, store, key);
+    return true;
+  }
+
+  return handle_navigation_key(tui, search, store, query, key);
 }

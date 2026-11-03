@@ -110,10 +110,13 @@ static bool start_process(LogSource *source, bool follow) {
 
   bool resolve = !*source->container_id;
   char *inspect[] = { "docker", "container", "inspect", "--format", "{{.Id}}", "--", (char *)source->container, nullptr };
-  char *logs[] = {
-    "docker", "logs", "--tail", (char *)source->tail, follow ? "--follow" : "--", follow ? "--" : source->container_id, follow ? source->container_id : nullptr,
-    nullptr
-  };
+  char *logs[] = { "docker", "logs", "--tail", (char *)source->tail, nullptr, nullptr, nullptr, nullptr };
+  size_t argument = 4;
+
+  if (follow) logs[argument++] = "--follow";
+
+  logs[argument++] = "--";
+  logs[argument] = source->container_id;
 
   if (!process_spawn(&source->child, resolve ? inspect : logs, output[1], output[1])) error = errno;
 
@@ -131,6 +134,42 @@ static bool start_process(LogSource *source, bool follow) {
   source->connection = resolve ? CONNECTION_RESOLVING : CONNECTION_RUNNING;
 
   return true;
+}
+
+static void poll_resolution(LogSource *source) {
+  char bytes[4096];
+  ssize_t length = read(source->fd, bytes, sizeof(bytes));
+
+  if (length > 0) {
+    size_t available = sizeof(source->resolution) - 1 - source->resolution_length;
+    size_t copy = (size_t)length < available ? (size_t)length : available;
+
+    memcpy(source->resolution + source->resolution_length, bytes, copy);
+    source->resolution_length += copy;
+    source->resolution[source->resolution_length] = 0;
+    return;
+  }
+
+  if (!length || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) source->eof = true;
+}
+
+static bool resolve_container_id(LogSource *source) {
+  const char *id = source->resolution;
+
+  while (*id) {
+    size_t length = strcspn(id, "\r\n");
+
+    if (length == 64 && strspn(id, "0123456789abcdef") == 64) {
+      memcpy(source->container_id, id, 64);
+      source->container_id[64] = 0;
+      return true;
+    }
+
+    id += length;
+    while (*id == '\r' || *id == '\n') id++;
+  }
+
+  return false;
 }
 
 /* Never wait for a connector while holding up the UI. EOF precedes exit publication. */
@@ -158,18 +197,7 @@ static bool managed_poll(LogSource *source, LogStore *store, bool follow, size_t
   if (source->connection == CONNECTION_ERROR || source->connection == CONNECTION_STOPPED) return true;
 
   if (source->connection == CONNECTION_RESOLVING && !source->eof) {
-    char bytes[4096];
-    ssize_t n = read(source->fd, bytes, sizeof(bytes));
-
-    if (n > 0) {
-      size_t available = sizeof(source->resolution) - 1 - source->resolution_length;
-      size_t copy = (size_t)n < available ? (size_t)n : available;
-
-      memcpy(source->resolution + source->resolution_length, bytes, copy);
-      source->resolution_length += copy;
-      source->resolution[source->resolution_length] = 0;
-    } else if (!n) source->eof = true;
-    else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) source->eof = true;
+    poll_resolution(source);
   } else if (source->connection == CONNECTION_RUNNING && !source->eof) {
     if (!poll_stream(source, store, follow, changed)) return false;
   }
@@ -190,27 +218,14 @@ static bool managed_poll(LogSource *source, LogStore *store, bool follow, size_t
 
   bool success = ended > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 
-  if (source->connection == CONNECTION_RESOLVING && success) {
-    const char *id = source->resolution;
-
-    while (*id) {
-      size_t length = strcspn(id, "\r\n");
-
-      if (length == 64 && strspn(id, "0123456789abcdef") == 64) break;
-      id += length;
-      while (*id == '\r' || *id == '\n') id++;
-    }
-
-    success = *id != 0;
-    if (success) {
-      memcpy(source->container_id, id, 64);
-      source->container_id[64] = 0;
-      source->connection = CONNECTION_PENDING;
-      source->eof = false;
-      return true;
-    }
-  } else if (source->connection == CONNECTION_RUNNING) {
+  if (source->connection == CONNECTION_RUNNING) {
     source->connection = success ? CONNECTION_STOPPED : CONNECTION_ERROR;
+    return true;
+  }
+
+  if (source->connection == CONNECTION_RESOLVING && success && resolve_container_id(source)) {
+    source->connection = CONNECTION_PENDING;
+    source->eof = false;
     return true;
   }
 

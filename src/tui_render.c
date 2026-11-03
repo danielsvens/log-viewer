@@ -179,7 +179,14 @@ static void render_records(Tui *tui, Search *search, const LogView *store, const
     render_record(&record, (int)row + 1, left, width, tui->horizontal, index == store->selected, level);
   }
 
-  if (!store->matches) mvaddstr(2, left + 2, *query->error ? "Invalid query" : (store->searching && !store->cached ? "Searching..." : "No matching logs"));
+  if (!store->matches) {
+    const char *message = "No matching logs";
+
+    if (store->searching && !store->cached) message = "Searching...";
+    if (*query->error) message = "Invalid query";
+
+    mvaddstr(2, left + 2, message);
+  }
 }
 
 static void render_tree(Tui *tui, Search *search, int height, int width) {

@@ -12,12 +12,19 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static constexpr long DISCOVERY_INTERVAL_SECONDS = 2;
+static constexpr long HEALTHY_STREAM_SECONDS = 30;
+static constexpr unsigned int RETRY_EXPONENTIAL_STEPS = 5;
+static constexpr long RETRY_MAX_SECONDS = 30;
+
+typedef enum { KUBE_CONFIG, KUBE_RESOURCE, KUBE_REPLICASETS, KUBE_PODS } KubeDiscoveryStage;
+
 struct KubeTarget {
   char *name, *context, *namespace, *uid, *selector, *tail;
   InputKind kind;
   size_t group;
   ManagedProcess command;
-  int stage;
+  KubeDiscoveryStage stage;
   bool configured, done, failed;
   unsigned int retry;
   long next;
@@ -33,9 +40,12 @@ struct ManagedKubeReader {
 
 static struct json_value_s *field(struct json_value_s *value, const char *key) {
   struct json_object_s *object = value ? json_value_as_object(value) : nullptr;
+
   if (!object) return nullptr;
+
   for (struct json_object_element_s *e = object->start; e; e = e->next)
     if (!strcmp(e->name->string, key)) return e->value;
+
   return nullptr;
 }
 
@@ -53,52 +63,68 @@ static struct json_array_s *array(struct json_value_s *value, const char *key) {
 
 static bool owned(struct json_value_s *value, const char *kind, const char *uid) {
   struct json_array_s *owners = array(field(value, "metadata"), "ownerReferences");
+
   for (struct json_array_element_s *e = owners ? owners->start : nullptr; e; e = e->next) {
     struct json_value_s *controller = field(e->value, "controller");
+
     if (controller && controller->type == json_type_true && !strcmp(string(field(e->value, "kind")), kind) && !strcmp(string(field(e->value, "uid")), uid))
       return true;
   }
+
   return false;
 }
 
 static long backoff(unsigned int *attempt) {
   unsigned int n = *attempt;
-  if (n < 5) {
+
+  if (n < RETRY_EXPONENTIAL_STEPS) {
     (*attempt)++;
     return 1L << n;
   }
-  return 30;
+
+  return RETRY_MAX_SECONDS;
 }
 
 static size_t add_group(SourceSet *set, const char *name, size_t parent) {
   SourceGroup *groups = realloc(set->groups, (set->group_count + 1) * sizeof(*groups));
+
   if (!groups) return SIZE_MAX;
+
   set->groups = groups;
 
   char *copy = text_copy(name);
+
   if (!copy) return SIZE_MAX;
+
   size_t id = set->group_count++;
   set->groups[id] = (SourceGroup){ .name = copy, .parent = parent, .status = "waiting" };
   set->revision++;
+
   return id;
 }
 
 static bool membership(SourceSet *set, size_t group, size_t source) {
   SourceGroup *g = &set->groups[group];
+
   for (size_t i = 0; i < g->count; i++)
     if (g->members[i] == source) return true;
 
   size_t *members = realloc(g->members, (g->count + 1) * sizeof(*members));
+
   if (!members) return false;
+
   g->members = members;
   g->members[g->count++] = source;
   set->revision++;
+
   return true;
 }
 
 bool kube_add_target(SourceSet *set, const InputSpec *input) {
   KubeTarget *targets = realloc(set->targets, (set->target_count + 1) * sizeof(*targets));
+
   if (!targets) return false;
+
   set->targets = targets;
 
   KubeTarget *target = &targets[set->target_count++];
@@ -107,34 +133,40 @@ bool kube_add_target(SourceSet *set, const InputSpec *input) {
   target->context = input->kube_context ? text_copy(input->kube_context) : nullptr;
   target->namespace = input->kube_namespace ? text_copy(input->kube_namespace) : nullptr;
   target->tail = text_copy(input->kube_tail ? input->kube_tail : "1000");
+
   if (!target->name || !target->tail || (input->kube_context && !target->context) || (input->kube_namespace && !target->namespace)) return false;
 
   size_t length = strlen(input->value) + 12;
   char *name = malloc(length);
+
   if (!name) return false;
+
   snprintf(name, length, "%s/%s", input->kind == INPUT_KUBE_POD ? "pod" : "deployment", input->value);
   target->group = add_group(set, name, SIZE_MAX);
   free(name);
+
   return target->group != SIZE_MAX;
 }
 
 static bool launch_target(KubeTarget *target) {
   if (!target->configured) {
     char *args[] = { "kubectl", "config", "view", "-o", "json", nullptr };
-    target->stage = 0;
+    target->stage = KUBE_CONFIG;
+    return process_capture(&target->command, args);
+  }
+
+  if (target->stage == KUBE_REPLICASETS || target->stage == KUBE_PODS) {
+    char *resource = target->stage == KUBE_REPLICASETS ? "replicasets" : "pods";
+    char *args[] = { "kubectl",        "--context", target->context, "--namespace", target->namespace, "--request-timeout=10s", "get", resource, "--selector",
+                     target->selector, "-o",        "json",          nullptr };
+
     return process_capture(&target->command, args);
   }
 
   char *resource = target->kind == INPUT_KUBE_POD ? "pod" : "deployment";
-  char *args[] = { "kubectl", "--context", target->context, "--namespace", target->namespace, "--request-timeout=10s", "get", resource, target->name,
-                   "-o",      "json",      nullptr,         nullptr };
-  if (target->stage == 2 || target->stage == 3) {
-    args[7] = target->stage == 2 ? "replicasets" : "pods";
-    args[8] = "--selector";
-    args[9] = target->selector;
-    args[10] = "-o";
-    args[11] = "json";
-  }
+  char *args[] = { "kubectl",    "--context", target->context, "--namespace", target->namespace, "--request-timeout=10s", "get", resource,
+                   target->name, "-o",        "json",          nullptr };
+
   return process_capture(&target->command, args);
 }
 
@@ -152,53 +184,74 @@ static bool configure(KubeTarget *target, struct json_value_s *root) {
     target->configured = target->context && target->namespace;
     return target->configured;
   }
+
   return false;
 }
 
 static bool selector_append(TextBuffer *buffer, const char *text) {
   size_t length = strlen(text);
+
   if (!text_buffer_reserve(buffer, buffer->length + length + 1)) return false;
 
   memcpy(buffer->data + buffer->length, text, length + 1);
   buffer->length += length;
+
   return true;
+}
+
+static bool append_selector_expression(TextBuffer *out, struct json_value_s *expression) {
+  const char *key = string(field(expression, "key"));
+  const char *operator = string(field(expression, "operator"));
+
+  if (!strcmp(operator, "Exists")) return selector_append(out, key);
+  if (!strcmp(operator, "DoesNotExist")) return selector_append(out, "!") && selector_append(out, key);
+  if (strcmp(operator, "In") && strcmp(operator, "NotIn")) return false;
+
+  const char *operation = !strcmp(operator, "In") ? " in (" : " notin (";
+
+  if (!selector_append(out, key) || !selector_append(out, operation)) return false;
+
+  struct json_array_s *values = array(expression, "values");
+
+  for (struct json_array_element_s *value = values ? values->start : nullptr; value; value = value->next) {
+    const char *separator = value == values->start ? "" : ",";
+
+    if (!selector_append(out, separator) || !selector_append(out, string(value->value))) return false;
+  }
+
+  return selector_append(out, ")");
 }
 
 /* Build the Kubernetes label selector, including set-based expressions. */
 static char *selector_text(struct json_value_s *selector) {
   TextBuffer out = { 0 };
-  bool comma = false, valid = true;
+  bool comma = false;
   struct json_value_s *label_value = field(selector, "matchLabels");
   struct json_object_s *labels = label_value ? json_value_as_object(label_value) : nullptr;
 
-  for (struct json_object_element_s *e = labels ? labels->start : nullptr; e && valid; e = e->next) {
-    valid = selector_append(&out, comma ? "," : "") && selector_append(&out, e->name->string) && selector_append(&out, "=") &&
-            selector_append(&out, string(e->value));
+  for (struct json_object_element_s *label = labels ? labels->start : nullptr; label; label = label->next) {
+    if (!selector_append(&out, comma ? "," : "") || !selector_append(&out, label->name->string) || !selector_append(&out, "=") ||
+        !selector_append(&out, string(label->value)))
+      goto error;
+
     comma = true;
   }
 
   struct json_array_s *expressions = array(selector, "matchExpressions");
-  for (struct json_array_element_s *e = expressions ? expressions->start : nullptr; e && valid; e = e->next) {
-    const char *key = string(field(e->value, "key")), *op = string(field(e->value, "operator"));
-    valid = selector_append(&out, comma ? "," : "");
-    if (!strcmp(op, "Exists")) valid = valid && selector_append(&out, key);
-    else if (!strcmp(op, "DoesNotExist")) valid = valid && selector_append(&out, "!") && selector_append(&out, key);
-    else if (!strcmp(op, "In") || !strcmp(op, "NotIn")) {
-      valid = valid && selector_append(&out, key) && selector_append(&out, !strcmp(op, "In") ? " in (" : " notin (");
-      struct json_array_s *values = array(e->value, "values");
-      for (struct json_array_element_s *v = values ? values->start : nullptr; v && valid; v = v->next)
-        valid = selector_append(&out, v == values->start ? "" : ",") && selector_append(&out, string(v->value));
-      valid = valid && selector_append(&out, ")");
-    } else valid = false;
+
+  for (struct json_array_element_s *expression = expressions ? expressions->start : nullptr; expression; expression = expression->next) {
+    if (!selector_append(&out, comma ? "," : "") || !append_selector_expression(&out, expression->value)) goto error;
+
     comma = true;
   }
 
-  if (!valid || !out.length) {
-    text_buffer_destroy(&out);
-    return nullptr;
-  }
+  if (!out.length) goto error;
 
   return out.data;
+
+error:
+  text_buffer_destroy(&out);
+  return nullptr;
 }
 
 static bool pod_owned(KubeTarget *target, struct json_value_s *pod) {
@@ -215,206 +268,317 @@ static struct json_value_s *container_status(struct json_value_s *pod, const cha
   return nullptr;
 }
 
+static size_t pod_group(SourceSet *set, const KubeTarget *target, const char *name, const char *uid) {
+  if (target->kind == INPUT_KUBE_POD) return target->group;
+
+  size_t group = SIZE_MAX;
+
+  for (size_t i = 0; i < set->group_count; i++) {
+    const SourceGroup *candidate = &set->groups[i];
+
+    if (candidate->parent == target->group && candidate->uid && !strcmp(candidate->uid, uid)) group = i;
+  }
+
+  if (group != SIZE_MAX) return group;
+
+  group = add_group(set, name, target->group);
+
+  if (group == SIZE_MAX) return SIZE_MAX;
+
+  set->groups[group].uid = text_copy(uid);
+
+  return set->groups[group].uid ? group : SIZE_MAX;
+}
+
+static size_t container_source(SourceSet *set, const KubeTarget *target, const char *name, const char *uid, const char *container) {
+  for (size_t i = 0; i < set->count; i++) {
+    const LogSource *source = &set->entries[i].source;
+
+    if (!source->kube) continue;
+    if (strcmp(source->kube_context, target->context) || strcmp(source->kube_namespace, target->namespace)) continue;
+    if (!strcmp(source->kube_uid, uid) && !strcmp(source->kube_container, container)) return i;
+  }
+
+  if (set->count == set->capacity) {
+    size_t capacity = set->capacity ? set->capacity * 2 : 8;
+    SourceEntry *entries = realloc(set->entries, capacity * sizeof(*entries));
+
+    if (!entries) return SIZE_MAX;
+
+    set->entries = entries;
+    set->capacity = capacity;
+  }
+
+  size_t length = strlen(target->context) + strlen(target->namespace) + strlen(name) + strlen(container) + 9;
+  char *path = malloc(length);
+
+  if (!path) return SIZE_MAX;
+
+  snprintf(path, length, "kube:%s/%s/%s/%s", target->context, target->namespace, name, container);
+
+  LogSource source;
+
+  if (source_open_docker(&source, path, nullptr, target->tail) != SOURCE_OPENED) {
+    free(path);
+    return SIZE_MAX;
+  }
+
+  source.kube = true;
+  source.kube_context = text_copy(target->context);
+  source.kube_namespace = text_copy(target->namespace);
+  source.kube_pod = text_copy(name);
+  source.kube_uid = text_copy(uid);
+  source.kube_container = text_copy(container);
+
+  if (!source.kube_context || !source.kube_namespace || !source.kube_pod || !source.kube_uid || !source.kube_container) {
+    source_close(&source);
+    free(path);
+    return SIZE_MAX;
+  }
+
+  size_t id = set->count++;
+  source.source_id = id;
+  set->entries[id] = (SourceEntry){ source, path };
+  set->revision++;
+
+  return id;
+}
+
+static bool update_container_state(LogSource *source, struct json_value_s *pod, const char *container) {
+  struct json_value_s *status = container_status(pod, container);
+  struct json_value_s *state = field(status, "state");
+  bool available = field(state, "running") || field(state, "terminated");
+  bool completed = field(state, "terminated") != nullptr;
+
+  struct json_value_s *restart_value = field(status, "restartCount");
+  struct json_number_s *restart = restart_value ? json_value_as_number(restart_value) : nullptr;
+  const char *instance = string(field(status, "containerID"));
+  char attempt[256];
+
+  snprintf(attempt, sizeof(attempt), "%s:%s", restart ? restart->number : "0", instance);
+
+  if (*source->resolution && strcmp(source->resolution, attempt)) {
+    source->reconnect = true;
+    source->retry_at = 0;
+  }
+
+  snprintf(source->resolution, sizeof(source->resolution), "%s", attempt);
+  source->kube_available = available;
+  source->kube_completed = completed;
+
+  return available;
+}
+
 static bool attach_pod(SourceSet *set, KubeTarget *target, struct json_value_s *pod) {
   const char *uid = metadata(pod, "uid"), *name = metadata(pod, "name");
+
   if (!*uid || !*name) return false;
 
-  size_t group = target->group;
-  if (target->kind != INPUT_KUBE_POD) {
-    group = SIZE_MAX;
-    for (size_t i = 0; i < set->group_count; i++)
-      if (set->groups[i].parent == target->group && set->groups[i].uid && !strcmp(set->groups[i].uid, uid)) group = i;
-    if (group == SIZE_MAX) {
-      group = add_group(set, name, target->group);
-      if (group == SIZE_MAX) return false;
-      set->groups[group].uid = text_copy(uid);
-      if (!set->groups[group].uid) return false;
-    }
-    if (group == SIZE_MAX) return false;
-  }
+  size_t group = pod_group(set, target, name, uid);
+
+  if (group == SIZE_MAX) return false;
 
   struct json_array_s *containers = array(field(pod, "spec"), "containers");
-  if (!containers) return false;
-  bool unavailable = false;
-  for (struct json_array_element_s *e = containers->start; e; e = e->next) {
-    const char *container = string(field(e->value, "name"));
-    if (!*container) return false;
-    size_t id = SIZE_MAX;
-    for (size_t i = 0; i < set->count; i++) {
-      LogSource *s = &set->entries[i].source;
-      if (s->kube && !strcmp(s->kube_context, target->context) && !strcmp(s->kube_namespace, target->namespace) && !strcmp(s->kube_uid, uid) &&
-          !strcmp(s->kube_container, container)) {
-        id = i;
-        break;
-      }
-    }
-    if (id == SIZE_MAX) {
-      if (set->count == set->capacity) {
-        size_t capacity = set->capacity ? set->capacity * 2 : 8;
-        SourceEntry *entries = realloc(set->entries, capacity * sizeof(*entries));
-        if (!entries) return false;
-        set->entries = entries;
-        set->capacity = capacity;
-      }
-      size_t length = strlen(target->context) + strlen(target->namespace) + strlen(name) + strlen(container) + 9;
-      char *path = malloc(length);
-      if (!path) return false;
-      snprintf(path, length, "kube:%s/%s/%s/%s", target->context, target->namespace, name, container);
-      LogSource source;
-      if (source_open_docker(&source, path, nullptr, target->tail) != SOURCE_OPENED) {
-        free(path);
-        return false;
-      }
-      source.kube = true;
-      source.kube_context = text_copy(target->context);
-      source.kube_namespace = text_copy(target->namespace);
-      source.kube_pod = text_copy(name);
-      source.kube_uid = text_copy(uid);
-      source.kube_container = text_copy(container);
 
-      if (!source.kube_context || !source.kube_namespace || !source.kube_pod || !source.kube_uid || !source.kube_container) {
-        source_close(&source);
-        free(path);
-        return false;
-      }
-      id = set->count++;
-      source.source_id = id;
-      set->entries[id] = (SourceEntry){ source, path };
-      set->revision++;
-    }
+  if (!containers) return false;
+
+  bool unavailable = false;
+
+  for (struct json_array_element_s *entry = containers->start; entry; entry = entry->next) {
+    const char *container = string(field(entry->value, "name"));
+
+    if (!*container) return false;
+
+    size_t id = container_source(set, target, name, uid, container);
+
+    if (id == SIZE_MAX) return false;
     if (!membership(set, group, id) || !membership(set, target->group, id)) return false;
 
-    LogSource *s = &set->entries[id].source;
-    struct json_value_s *status = container_status(pod, container);
-    struct json_value_s *state = field(status, "state");
-    bool available = field(state, "running") || field(state, "terminated");
-    bool completed = field(state, "terminated") != nullptr;
-    struct json_value_s *restart_value = field(status, "restartCount");
-    struct json_number_s *restart = restart_value ? json_value_as_number(restart_value) : nullptr;
-    const char *instance = string(field(status, "containerID"));
-    char attempt[256];
-    snprintf(attempt, sizeof(attempt), "%s:%s", restart ? restart->number : "0", instance);
-    if (*s->resolution && strcmp(s->resolution, attempt)) {
-      s->reconnect = true;
-      s->retry_at = 0;
-    }
-    snprintf(s->resolution, sizeof(s->resolution), "%s", attempt);
-    s->kube_available = available;
-    s->kube_completed = completed;
-    if (!available) unavailable = true;
+    LogSource *source = &set->entries[id].source;
+
+    if (!update_container_state(source, pod, container)) unavailable = true;
   }
+
   set->groups[group].status = unavailable ? "waiting for containers" : "";
   if (unavailable) target->failed = true;
+
   return true;
 }
 
 static void target_error(SourceSet *set, KubeTarget *target, const char *message, bool follow) {
   snprintf(target->error, sizeof(target->error), "error: %s", message && *message ? message : "Kubernetes metadata request failed or timed out");
   set->groups[target->group].status = target->error;
+
   target->failed = true;
   target->done = !follow;
   target->next = process_seconds() + backoff(&target->retry);
-  target->stage = target->configured ? 1 : 0;
+  target->stage = target->configured ? KUBE_RESOURCE : KUBE_CONFIG;
   set->revision++;
+}
+
+static bool configure_targets(SourceSet *set, KubeTarget *target, struct json_value_s *root) {
+  if (!configure(target, root)) return false;
+
+  /* All invocation targets share the resolved defaults, pinned once. */
+  bool valid = true;
+
+  for (size_t i = 0; i < set->target_count; i++) {
+    KubeTarget *other = &set->targets[i];
+
+    if (!other->context) other->context = text_copy(target->context);
+    if (!other->namespace) other->namespace = text_copy(target->namespace);
+
+    other->configured = other->context && other->namespace;
+    if (!other->configured) valid = false;
+    if (!other->command.pid) other->stage = KUBE_RESOURCE;
+  }
+
+  target->stage = KUBE_RESOURCE;
+
+  return valid;
+}
+
+static void mark_pods_unavailable(SourceSet *set, const KubeTarget *target) {
+  const SourceGroup *group = &set->groups[target->group];
+
+  for (size_t i = 0; i < group->count; i++) set->entries[group->members[i]].source.kube_available = false;
+}
+
+static bool resolve_target(SourceSet *set, KubeTarget *target, struct json_value_s *root) {
+  const char *uid = metadata(root, "uid");
+
+  if (!*uid || (target->uid && strcmp(target->uid, uid))) {
+    if (target->uid) mark_pods_unavailable(set, target);
+    return false;
+  }
+
+  if (!target->uid) {
+    target->uid = text_copy(uid);
+
+    if (!target->uid) return false;
+  }
+
+  if (target->kind == INPUT_KUBE_POD) {
+    target->failed = false;
+    return attach_pod(set, target, root);
+  }
+
+  free(target->selector);
+  target->selector = selector_text(field(field(root, "spec"), "selector"));
+  target->stage = KUBE_REPLICASETS;
+
+  return target->selector != nullptr;
+}
+
+static bool update_replicasets(KubeTarget *target, struct json_value_s *root, const char *output) {
+  if (!array(root, "items")) return false;
+
+  free(target->replicas);
+  target->replicas = json_parse(output, strlen(output));
+  target->stage = KUBE_PODS;
+
+  return target->replicas != nullptr;
+}
+
+static bool update_pods(SourceSet *set, KubeTarget *target, struct json_value_s *root) {
+  struct json_array_s *pods = array(root, "items");
+  target->failed = false;
+
+  if (!pods) return false;
+
+  /* Only a successful snapshot confirms a pod's removal. */
+  mark_pods_unavailable(set, target);
+
+  for (struct json_array_element_s *entry = pods->start; entry; entry = entry->next) {
+    if (!pod_owned(target, entry->value)) continue;
+    if (!attach_pod(set, target, entry->value)) return false;
+  }
+
+  return true;
+}
+
+static bool apply_discovery(SourceSet *set, KubeTarget *target, struct json_value_s *root, const char *output, bool *cycle_complete) {
+  switch (target->stage) {
+  case KUBE_CONFIG:
+    return configure_targets(set, target, root);
+  case KUBE_RESOURCE:
+    *cycle_complete = target->kind == INPUT_KUBE_POD;
+    return resolve_target(set, target, root);
+  case KUBE_REPLICASETS:
+    return update_replicasets(target, root, output);
+  case KUBE_PODS:
+    *cycle_complete = true;
+    return update_pods(set, target, root);
+  }
+
+  return false;
+}
+
+static void finish_discovery(SourceSet *set, KubeTarget *target, bool follow) {
+  target->retry = 0;
+  target->next = process_seconds() + DISCOVERY_INTERVAL_SECONDS;
+  target->stage = KUBE_RESOURCE;
+  target->done = !follow;
+
+  SourceGroup *group = &set->groups[target->group];
+
+  group->status = group->count ? "" : "waiting for pods";
+  if (target->failed) group->status = "waiting for containers";
+}
+
+static void complete_discovery_command(SourceSet *set, KubeTarget *target, int result, bool follow) {
+  char *output = process_output(target->command.output);
+  char *diagnostic = process_output(target->command.diagnostic);
+  process_close(&target->command);
+
+  JsonWorkspace workspace = { 0 };
+  bool parsed = output && json_workspace_parse(output, strlen(output), &workspace) == JSON_FIELD_FOUND;
+  bool valid = result > 0 && parsed;
+  bool cycle_complete = false;
+
+  if (valid) valid = apply_discovery(set, target, workspace.root, output, &cycle_complete);
+
+  if (!valid) {
+    const char *message = result < 0 ? diagnostic : "Invalid Kubernetes metadata or attached target UID changed";
+    target_error(set, target, message, follow);
+  } else if (cycle_complete) {
+    finish_discovery(set, target, follow);
+  }
+
+  free(output);
+  free(diagnostic);
+  json_workspace_destroy(&workspace);
 }
 
 bool kube_poll(SourceSet *set, bool follow) {
   set->kube_pending = set->kube_failed = false;
+
   for (size_t i = 0; i < set->target_count; i++) {
     KubeTarget *target = &set->targets[i];
+
     if (target->done) {
       set->kube_failed |= target->failed;
       continue;
     }
+
     set->kube_pending = true;
+
     if (!target->command.pid) {
       if (!target->configured && i && !set->targets[0].done) continue;
       if (process_seconds() < target->next) continue;
+
       if (!launch_target(target)) target_error(set, target, strerror(errno), follow);
       continue;
     }
 
     int result = process_poll(&target->command);
+
     if (!result) continue;
-    char *output = process_output(target->command.output);
-    char *diagnostic = process_output(target->command.diagnostic);
-    process_close(&target->command);
-    JsonWorkspace workspace = { 0 };
-    bool parsed = output && json_workspace_parse(output, strlen(output), &workspace) == JSON_FIELD_FOUND;
-    struct json_value_s *root = parsed ? workspace.root : nullptr;
-    bool valid = result > 0 && root;
-    bool cycle = false;
 
-    if (valid && target->stage == 0) {
-      valid = configure(target, root);
-      if (valid) {
-        /* All invocation targets share the resolved defaults, pinned once. */
-        for (size_t j = 0; j < set->target_count; j++) {
-          KubeTarget *other = &set->targets[j];
-          if (!other->context) other->context = text_copy(target->context);
-          if (!other->namespace) other->namespace = text_copy(target->namespace);
-          if (!other->context || !other->namespace) valid = false;
-          other->configured = other->context && other->namespace;
-          if (!other->command.pid) other->stage = 1;
-        }
-        target->stage = 1;
-      }
-    } else if (valid && target->stage == 1) {
-      const char *uid = metadata(root, "uid");
-      valid = *uid && (!target->uid || !strcmp(target->uid, uid));
-      if (!valid && target->uid) {
-        SourceGroup *g = &set->groups[target->group];
-        for (size_t j = 0; j < g->count; j++) set->entries[g->members[j]].source.kube_available = false;
-      }
-      if (valid && !target->uid) {
-        target->uid = text_copy(uid);
-        valid = target->uid != nullptr;
-      }
-      if (valid && target->kind == INPUT_KUBE_POD) {
-        target->failed = false;
-        valid = attach_pod(set, target, root);
-        cycle = true;
-      } else if (valid) {
-        free(target->selector);
-        target->selector = selector_text(field(field(root, "spec"), "selector"));
-        valid = target->selector != nullptr;
-        target->stage = 2;
-      }
-    } else if (valid && target->stage == 2) {
-      valid = array(root, "items") != nullptr;
-      if (valid) {
-        free(target->replicas);
-        target->replicas = json_parse(output, strlen(output));
-        valid = target->replicas != nullptr;
-        target->stage = 3;
-      }
-    } else if (valid && target->stage == 3) {
-      struct json_array_s *pods = array(root, "items");
-      valid = pods != nullptr;
-      target->failed = false;
-      if (valid) {
-        /* Only a successful snapshot confirms a pod's removal. */
-        SourceGroup *g = &set->groups[target->group];
-        for (size_t j = 0; j < g->count; j++) set->entries[g->members[j]].source.kube_available = false;
-        for (struct json_array_element_s *e = pods->start; e && valid; e = e->next)
-          if (pod_owned(target, e->value)) valid = attach_pod(set, target, e->value);
-      }
-      cycle = true;
-    }
-
-    if (!valid) target_error(set, target, result < 0 ? diagnostic : "Invalid Kubernetes metadata or attached target UID changed", follow);
-    else if (cycle) {
-      target->retry = 0;
-      target->next = process_seconds() + 2;
-      target->stage = 1;
-      target->done = !follow;
-      set->groups[target->group].status = target->failed ? "waiting for containers" : (set->groups[target->group].count ? "" : "waiting for pods");
-    }
-    free(output);
-    free(diagnostic);
-    json_workspace_destroy(&workspace);
+    complete_discovery_command(set, target, result, follow);
     set->kube_failed |= target->failed;
   }
+
   return true;
 }
 
@@ -475,18 +639,24 @@ static void stop_reader(LogSource *source) {
 
 static bool reader_start(LogSource *source, bool follow) {
   int output[2];
+
   if (pipe(output) < 0) return false;
+
   fcntl(output[0], F_SETFD, FD_CLOEXEC);
   fcntl(output[1], F_SETFD, FD_CLOEXEC);
 
   struct ManagedKubeReader *reader = source->kube_reader;
+
   if (reader->diagnostic >= 0) close(reader->diagnostic);
+
   char temporary[] = "/tmp/log-viewer-kube-stderr-XXXXXX";
   reader->diagnostic = mkstemp(temporary);
+
   if (reader->diagnostic >= 0) {
     unlink(temporary);
     fcntl(reader->diagnostic, F_SETFD, FD_CLOEXEC);
   }
+
   char *args[] = { "kubectl",
                    "--context",
                    source->kube_context,
@@ -501,18 +671,22 @@ static bool reader_start(LogSource *source, bool follow) {
                    nullptr,
                    nullptr };
   if (follow && !source->kube_completed) args[11] = "--follow";
+
   bool success = reader->diagnostic >= 0 && process_spawn(&source->child, args, output[1], reader->diagnostic);
   close(output[1]);
+
   if (!success) {
     close(output[0]);
     return false;
   }
+
   source->fd = output[0];
   fcntl(source->fd, F_SETFL, O_NONBLOCK);
   source->kube_error[0] = 0;
   source->connection = CONNECTION_RUNNING;
   source->running_since = process_seconds();
   source->eof = false;
+
   return true;
 }
 
@@ -522,99 +696,93 @@ static void reader_failed(LogSource *source, bool follow) {
   source->retry_at = follow ? process_seconds() + backoff(&source->retry) : 0;
 }
 
-bool kube_reader_poll(LogSource *source, LogStore *store, bool follow, size_t *changed) {
-  if (!source->kube_reader) {
-    source->kube_reader = calloc(1, sizeof(*source->kube_reader));
-    if (!source->kube_reader) return false;
-    *source->kube_reader = (struct ManagedKubeReader){ .verify = { .output = -1, .diagnostic = -1 }, .diagnostic = -1 };
+static bool drain_reader_attempt(LogSource *source, LogStore *store, size_t *changed) {
+  if (source->fd < 0) return true;
+
+  /* Drain available bytes before publishing a final partial record. */
+  for (;;) {
+    uint64_t before = source->offset;
+    size_t local = SIZE_MAX;
+
+    if (!source_poll_stream(source, store, false, &local)) return false;
+
+    if (local < *changed) *changed = local;
+    if (before == source->offset) break;
   }
+
+  if (!source->tail_indexed && source->line_start < source->offset) {
+    log_store_select_file(store, source->segment);
+
+    if (!log_store_append(store, source->line_start, source->offset - source->line_start)) return false;
+    if (*changed > store->count - 1) *changed = store->count - 1;
+  }
+
+  return true;
+}
+
+static bool poll_running_reader(LogSource *source, LogStore *store, bool follow, size_t *changed) {
+  if (process_seconds() - source->running_since >= HEALTHY_STREAM_SECONDS) source->retry = 0;
+
+  if (!source_poll_stream(source, store, follow, changed)) return false;
+  if (!source->eof) return true;
+
+  int status;
+  pid_t ended = waitpid(source->child, &status, WNOHANG);
+
+  if (!ended || (ended < 0 && errno == EINTR)) {
+    source->eof = false;
+    return true;
+  }
+
+  source->child = 0;
+  close(source->fd);
+  source->fd = -1;
+
+  bool success = ended > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+
+  if (success && (!follow || source->kube_completed || !source->kube_available)) {
+    source->connection = CONNECTION_STOPPED;
+    return true;
+  }
+
+  char *diagnostic = process_output(source->kube_reader->diagnostic);
+  snprintf(source->kube_error, sizeof(source->kube_error), "error: %s", diagnostic && *diagnostic ? diagnostic : "log reader disconnected");
+  free(diagnostic);
+  reader_failed(source, follow);
+
+  return true;
+}
+
+static bool poll_reader_verification(LogSource *source, bool follow) {
   struct ManagedKubeReader *reader = source->kube_reader;
-  if (source->reconnect) {
-    source->reconnect = false;
-    /* Drain bytes already available and publish partial records before changing attempts. */
-    if (source->fd >= 0) {
-      for (;;) {
-        uint64_t before = source->offset;
-        size_t local = SIZE_MAX;
-        if (!source_poll_stream(source, store, false, &local)) return false;
-        if (local < *changed) *changed = local;
-        if (before == source->offset) break;
-      }
-      if (!source->tail_indexed && source->line_start < source->offset) {
-        log_store_select_file(store, source->segment);
-        if (!log_store_append(store, source->line_start, source->offset - source->line_start)) return false;
-        if (*changed > store->count - 1) *changed = store->count - 1;
-      }
-    }
-    stop_reader(source);
-    process_close(&reader->verify);
-    reader->verifying = false;
-    source->replayed = true;
-    source->connection = CONNECTION_PENDING;
-    source->retry_at = 0;
-  }
-  if (source->connection == CONNECTION_RUNNING) {
-    if (process_seconds() - source->running_since >= 30) source->retry = 0;
-    if (!source_poll_stream(source, store, follow, changed)) return false;
-    if (!source->eof) return true;
-    int status;
-    pid_t ended = waitpid(source->child, &status, WNOHANG);
-    if (!ended || (ended < 0 && errno == EINTR)) {
-      source->eof = false;
-      return true;
-    }
-    source->child = 0;
-    close(source->fd);
-    source->fd = -1;
-    bool success = ended > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-    if (success && (!follow || source->kube_completed || !source->kube_available)) source->connection = CONNECTION_STOPPED;
-    else {
-      char *diagnostic = process_output(reader->diagnostic);
-      snprintf(source->kube_error, sizeof(source->kube_error), "error: %s", diagnostic && *diagnostic ? diagnostic : "log reader disconnected");
-      free(diagnostic);
-      reader_failed(source, follow);
-    }
-    return true;
-  }
-  if (source->connection == CONNECTION_STOPPED) return true;
-  if (source->connection == CONNECTION_ERROR) {
-    if (!follow || !source->kube_available || process_seconds() < source->retry_at) return true;
-    source->connection = CONNECTION_PENDING;
-    source->replayed = true;
-    source->line_start = source->offset;
-    source->tail_indexed = false;
-  }
-  if (!source->kube_available) {
-    if (reader->verifying) {
-      if (!process_poll(&reader->verify)) return true;
-      process_close(&reader->verify);
-      reader->verifying = false;
-      source->connection = CONNECTION_PENDING;
-    }
-    source->eof = !follow;
-    if (!follow) source->connection = CONNECTION_ERROR;
-    return true;
-  }
+
   source->eof = false;
+
   if (!reader->verifying) {
     char *args[] = {
       "kubectl", "--context", source->kube_context, "--namespace", source->kube_namespace, "--request-timeout=10s", "get", "pod", source->kube_pod, "-o",
       "json",    nullptr
     };
+
     if (!process_capture(&reader->verify, args)) {
       reader_failed(source, follow);
       return true;
     }
+
     reader->verifying = true;
     source->connection = CONNECTION_RESOLVING;
     return true;
   }
+
   int result = process_poll(&reader->verify);
+
   if (!result) return true;
+
   char *text = process_output(reader->verify.output);
   JsonWorkspace workspace = { 0 };
   bool valid = result > 0 && text && json_workspace_parse(text, strlen(text), &workspace) == JSON_FIELD_FOUND &&
                !strcmp(metadata(workspace.root, "uid"), source->kube_uid);
+
   if (!valid) {
     char *diagnostic = process_output(reader->verify.diagnostic);
     snprintf(
@@ -625,10 +793,67 @@ bool kube_reader_poll(LogSource *source, LogStore *store, bool follow, size_t *c
     );
     free(diagnostic);
   }
+
   free(text);
   json_workspace_destroy(&workspace);
   process_close(&reader->verify);
   reader->verifying = false;
+
   if (!valid || !reader_start(source, follow)) reader_failed(source, follow);
+
   return true;
+}
+
+bool kube_reader_poll(LogSource *source, LogStore *store, bool follow, size_t *changed) {
+  if (!source->kube_reader) {
+    source->kube_reader = calloc(1, sizeof(*source->kube_reader));
+
+    if (!source->kube_reader) return false;
+
+    *source->kube_reader = (struct ManagedKubeReader){ .verify = { .output = -1, .diagnostic = -1 }, .diagnostic = -1 };
+  }
+
+  struct ManagedKubeReader *reader = source->kube_reader;
+
+  if (source->reconnect) {
+    source->reconnect = false;
+
+    if (!drain_reader_attempt(source, store, changed)) return false;
+
+    stop_reader(source);
+    process_close(&reader->verify);
+    reader->verifying = false;
+    source->replayed = true;
+    source->connection = CONNECTION_PENDING;
+    source->retry_at = 0;
+  }
+
+  if (source->connection == CONNECTION_RUNNING) return poll_running_reader(source, store, follow, changed);
+
+  if (source->connection == CONNECTION_STOPPED) return true;
+
+  if (source->connection == CONNECTION_ERROR) {
+    if (!follow || !source->kube_available || process_seconds() < source->retry_at) return true;
+
+    source->connection = CONNECTION_PENDING;
+    source->replayed = true;
+    source->line_start = source->offset;
+    source->tail_indexed = false;
+  }
+
+  if (!source->kube_available) {
+    if (reader->verifying) {
+      if (!process_poll(&reader->verify)) return true;
+
+      process_close(&reader->verify);
+      reader->verifying = false;
+      source->connection = CONNECTION_PENDING;
+    }
+
+    source->eof = !follow;
+    if (!follow) source->connection = CONNECTION_ERROR;
+    return true;
+  }
+
+  return poll_reader_verification(source, follow);
 }
