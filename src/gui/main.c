@@ -2,6 +2,7 @@
 #include "log_viewer/app/options.h"
 #include "log_viewer/core/search.h"
 #include "log_viewer/core/query.h"
+#include "log_viewer/core/source_tree.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +18,8 @@ typedef struct {
   size_t detail_index;
   bool detail_requested, detail_ready;
   char *detail_text;
-  Rid detail;
+  Rid detail, detail_panel;
+  bool details_visible;
   size_t start, loaded, count;
   unsigned generation;
   char expression[QUERY_CAPACITY], error[160];
@@ -133,6 +135,7 @@ static void follow(Rid widget, void *context) {
   (void)widget;
   Gui *gui = context;
   gui->follow = !gui->follow;
+  Rbutton_set_text(widget, gui->follow ? "Follow: on" : "Follow: off");
 }
 
 static void pause_updates(Rid widget, void *context) {
@@ -140,7 +143,9 @@ static void pause_updates(Rid widget, void *context) {
   Gui *gui = context;
   pthread_mutex_lock(&gui->mutex);
   gui->paused = !gui->paused;
+  bool paused = gui->paused;
   pthread_mutex_unlock(&gui->mutex);
+  Rbutton_set_text(widget, paused ? "Resume viewport" : "Pause viewport");
 }
 
 static void details(Rid widget, int row, void *context) {
@@ -149,7 +154,110 @@ static void details(Rid widget, int row, void *context) {
   pthread_mutex_lock(&gui->mutex);
   gui->detail_index = (size_t)row;
   gui->detail_requested = true;
+  gui->details_visible = true;
+  Rwidget_set_visibility(gui->detail_panel, R_VISIBLE);
   pthread_mutex_unlock(&gui->mutex);
+}
+
+static void toggle_details(Rid widget, void *context) {
+  (void)widget;
+  Gui *gui = context;
+  gui->details_visible = !gui->details_visible;
+  Rwidget_set_visibility(gui->detail_panel, gui->details_visible ? R_VISIBLE : R_COLLAPSED);
+}
+
+/* SourceTree supplies labels and hierarchy; this wireframe does not change source scope. */
+static void populate_tree(Rid widget, Search *search) {
+  SourceTree tree = { 0 };
+  if (!source_tree_sync(&tree, search)) return;
+
+  Rid *parents = calloc(tree.count + 1, sizeof(*parents));
+  if (!parents) {
+    source_tree_destroy(&tree);
+    return;
+  }
+
+  for (size_t i = 0; i < tree.count; i++) {
+    SourceTreeRow row = tree.rows[i];
+    char *name = strndup(row.name, row.length);
+    if (!name) break;
+
+    Rid parent = row.depth ? parents[row.depth - 1] : R_INVALID_ID;
+    Rid item = Rtree_view_add_item(widget, parent, name);
+    parents[row.depth] = item;
+    Rtree_item_set_expanded(item, R_TRUE);
+    free(name);
+  }
+
+  free(parents);
+  source_tree_destroy(&tree);
+}
+
+static void build_workspace(Gui *gui, const Options *options) {
+  Rid window = Rwindow_create("Log viewer", 1280, 820, R_WINDOW_DEFAULT);
+  Rwindow_set_min_size(window, 720, 480);
+  Rid root = Rwidget_create(R_WIDGET_VBOX);
+  Rwindow_set_content(window, root);
+
+  Rid workspace = Rwidget_add_child(root, Rwidget_create(R_WIDGET_SPLITTER));
+  Rsplitter_set_orientation(workspace, R_HORIZONTAL);
+  Rsplitter_set_min_pane_size(workspace, 180.0f);
+  Rslot_set_fill(workspace, 1.0f);
+
+  Rid explorer = Rwidget_add_child(workspace, Rwidget_create(R_WIDGET_VBOX));
+  Rslot_set_fill(explorer, 0.22f);
+  Rid heading = Rwidget_add_child(explorer, Rlabel_create("EXPLORER"));
+  Rslot_set_padding(heading, 14, 12, 14, 12);
+  Rid tree = Rwidget_add_child(explorer, Rwidget_create(R_WIDGET_TREE_VIEW));
+  Rslot_set_fill(tree, 1.0f);
+  populate_tree(tree, gui->search);
+
+  Rid tabs = Rwidget_add_child(workspace, Rwidget_create(R_WIDGET_TAB_VIEW));
+  Rslot_set_fill(tabs, 0.78f);
+  Rtab_view_set_documents(tabs, R_TRUE);
+  Rid editor = Rwidget_create(R_WIDGET_VBOX);
+  Rtab_view_add_tab(tabs, "All logs", editor);
+
+  Rid toolbar = Rwidget_add_child(editor, Rwidget_create(R_WIDGET_HBOX));
+  Rpanel_set_spacing(toolbar, 8.0f);
+  Rslot_set_padding(toolbar, 10, 8, 10, 8);
+  gui->input = Rwidget_add_child(toolbar, Rwidget_create(R_WIDGET_TEXT_INPUT));
+  Rslot_set_fill(gui->input, 1.0f);
+  Rtext_input_set_placeholder(gui->input, "Filter logs…  Enter to apply");
+  Rtext_input_set_text(gui->input, options->filter);
+  Rtext_input_set_committed_callback(gui->input, filter, gui);
+  Rid button = Rwidget_add_child(toolbar, Rbutton_create("Follow: off"));
+  Rbutton_set_clicked_callback(button, follow, gui);
+  button = Rwidget_add_child(toolbar, Rbutton_create("Pause viewport"));
+  Rbutton_set_clicked_callback(button, pause_updates, gui);
+  button = Rwidget_add_child(toolbar, Rbutton_create("Details"));
+  Rbutton_set_clicked_callback(button, toggle_details, gui);
+
+  Rid panes = Rwidget_add_child(editor, Rwidget_create(R_WIDGET_SPLITTER));
+  Rsplitter_set_orientation(panes, R_VERTICAL);
+  Rslot_set_fill(panes, 1.0f);
+  gui->table = Rwidget_add_child(panes, Rwidget_create(R_WIDGET_TABLE));
+  Rwidget_set_font(gui->table, Rfont_get_monospace());
+  Rtable_set_activated_callback(gui->table, details, gui);
+  Rslot_set_fill(gui->table, 1.0f);
+  Rtable_add_column(gui->table, "Message", 1800);
+  Rtable_set_column_sortable(gui->table, 0, R_FALSE);
+
+  gui->detail_panel = Rwidget_add_child(panes, Rwidget_create(R_WIDGET_VBOX));
+  Rslot_set_fill(gui->detail_panel, 0.35f);
+  Rwidget_set_visibility(gui->detail_panel, R_COLLAPSED);
+  heading = Rwidget_add_child(gui->detail_panel, Rlabel_create("RECORD DETAILS  ·  Enter or double-click a log"));
+  Rslot_set_padding(heading, 12, 8, 12, 8);
+  gui->detail = Rwidget_add_child(gui->detail_panel, Rwidget_create(R_WIDGET_TEXT_EDITOR));
+  Rslot_set_fill(gui->detail, 1.0f);
+  Rtext_editor_set_read_only(gui->detail, R_TRUE);
+  Rtext_editor_set_word_wrap(gui->detail, R_FALSE);
+
+  Rid status = Rwidget_add_child(root, Rwidget_create(R_WIDGET_HBOX));
+  Rslot_set_padding(status, 12, 5, 12, 5);
+  gui->status_label = Rwidget_add_child(status, Rlabel_create("Opening logs…"));
+  Rslot_set_fill(gui->status_label, 1.0f);
+  Rwidget_add_child(status, Rlabel_create("UTF-8  ·  Log viewer"));
 }
 
 int main(int argc, char **argv) {
@@ -182,30 +290,7 @@ int main(int argc, char **argv) {
   }
   Rtheme_apply(R_THEME_DARK);
 
-  Rid window = Rwindow_create("Log viewer", 1200, 800, R_WINDOW_DEFAULT);
-  Rid box = Rwidget_create(R_WIDGET_VBOX);
-  Rwindow_set_content(window, box);
-  gui->input = Rwidget_add_child(box, Rwidget_create(R_WIDGET_TEXT_INPUT));
-  Rtext_input_set_text(gui->input, options.filter);
-  Rtext_input_set_committed_callback(gui->input, filter, gui);
-  Rid button = Rwidget_add_child(box, Rbutton_create("Toggle follow"));
-  Rbutton_set_clicked_callback(button, follow, gui);
-  button = Rwidget_add_child(box, Rbutton_create("Pause / resume viewport"));
-  Rbutton_set_clicked_callback(button, pause_updates, gui);
-  Rid panes = Rwidget_add_child(box, Rwidget_create(R_WIDGET_SPLITTER));
-  Rsplitter_set_orientation(panes, R_VERTICAL);
-  Rslot_set_fill(panes, 1.0f);
-  gui->table = Rwidget_add_child(panes, Rwidget_create(R_WIDGET_TABLE));
-  Rwidget_set_font(gui->table, Rfont_get_monospace());
-  Rtable_set_activated_callback(gui->table, details, gui);
-  Rslot_set_fill(gui->table, 1.0f);
-  Rtable_add_column(gui->table, "Message", 1800);
-  Rtable_set_column_sortable(gui->table, 0, R_FALSE);
-  gui->detail = Rwidget_add_child(panes, Rwidget_create(R_WIDGET_TEXT_EDITOR));
-  Rslot_set_fill(gui->detail, 0.3f);
-  Rtext_editor_set_read_only(gui->detail, R_TRUE);
-  Rtext_editor_set_word_wrap(gui->detail, R_FALSE);
-  gui->status_label = Rwidget_add_child(box, Rlabel_create("Opening logs…"));
+  build_workspace(gui, &options);
 
   pthread_t worker;
   if (pthread_create(&worker, nullptr, reader, gui)) {

@@ -31,3 +31,13 @@ million-row performance. Validate frame times and ingestion/query regressions
 using the existing benchmark corpus before adding visual effects. Counts above
 INT_MAX currently exceed Raven's table index range and must not be treated as a
 supported navigation range.
+
+## IDE wireframe
+
+The workspace has a resizable Explorer on the left and a document tab strip
+above the log viewport on the right. The initial tab is All logs; additional
+saved filter tabs are not wired yet. Search, follow, pause, and details controls
+sit inside the viewport toolbar. Record details start collapsed and open inside
+the viewport when a row is activated. A full-width status bar sits beneath both
+panes. Explorer currently displays the core source hierarchy at startup; clicking
+it does not yet apply a source filter or refresh discovery.
