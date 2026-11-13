@@ -1,4 +1,4 @@
-#include "log_viewer/log_store.h"
+#include "log_viewer/core/log_store.h"
 
 #include <errno.h>
 #include <fcntl.h>

@@ -3,9 +3,9 @@
 #include <regex.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "log_viewer/text.h"
-#include "log_viewer/log_level.h"
-#include "log_viewer/json_support.h"
+#include "log_viewer/core/text.h"
+#include "log_viewer/core/log_level.h"
+#include "log_viewer/core/json_support.h"
 
 constexpr int QUERY_CAPACITY = 512;
 

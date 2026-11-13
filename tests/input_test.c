@@ -1,6 +1,6 @@
 /* Exercise editor keys without a terminal or screen timing assumptions. */
-#include "log_viewer/tui.h"
-#include "log_viewer/text.h"
+#include "../src/tui/tui_internal.h"
+#include "log_viewer/core/text.h"
 
 #include <assert.h>
 #include <stdlib.h>

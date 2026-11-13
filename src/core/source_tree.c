@@ -1,5 +1,5 @@
-#include "log_viewer/source_tree.h"
-#include "log_viewer/source_set.h"
+#include "log_viewer/core/source_tree.h"
+#include "log_viewer/core/source_set.h"
 
 #include <errno.h>
 #include <stdlib.h>

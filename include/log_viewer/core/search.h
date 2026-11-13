@@ -1,8 +1,8 @@
 #pragma once
 
-#include "log_viewer/source.h"
-#include "log_viewer/log_level.h"
-#include "log_viewer/text.h"
+#include "log_viewer/core/source.h"
+#include "log_viewer/core/log_level.h"
+#include "log_viewer/core/text.h"
 
 #include <stdint.h>
 

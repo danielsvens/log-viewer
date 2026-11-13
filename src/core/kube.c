@@ -1,6 +1,6 @@
-#include "log_viewer/kube.h"
-#include "log_viewer/json_support.h"
-#include "log_viewer/text.h"
+#include "log_viewer/core/kube.h"
+#include "log_viewer/core/json_support.h"
+#include "log_viewer/core/text.h"
 #include "json.h"
 
 #include <errno.h>

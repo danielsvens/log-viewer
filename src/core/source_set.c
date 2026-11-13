@@ -1,6 +1,6 @@
-#include "log_viewer/source_set.h"
-#include "log_viewer/text.h"
-#include "log_viewer/kube.h"
+#include "log_viewer/core/source_set.h"
+#include "log_viewer/core/text.h"
+#include "log_viewer/core/kube.h"
 
 #include <dirent.h>
 #include <errno.h>

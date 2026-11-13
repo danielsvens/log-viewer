@@ -1,6 +1,6 @@
-#include "log_viewer/search.h"
-#include "log_viewer/source_set.h"
-#include "log_viewer/source_tree.h"
+#include "log_viewer/core/search.h"
+#include "log_viewer/core/source_set.h"
+#include "log_viewer/core/source_tree.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

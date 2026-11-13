@@ -3,9 +3,9 @@
 #include <ncurses.h>
 #include <stddef.h>
 #include <stdio.h>
-#include "log_viewer/search.h"
-#include "log_viewer/query.h"
-#include "log_viewer/source_tree.h"
+#include "log_viewer/core/search.h"
+#include "log_viewer/core/query.h"
+#include "log_viewer/core/source_tree.h"
 
 typedef enum { TUI_HEADER = 1, TUI_ERROR, TUI_WARNING, TUI_NORMAL, TUI_MUTED, TUI_STRING, TUI_LITERAL } TuiColor;
 

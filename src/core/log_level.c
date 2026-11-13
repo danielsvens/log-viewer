@@ -1,5 +1,5 @@
-#include "log_viewer/log_level.h"
-#include "log_viewer/text.h"
+#include "log_viewer/core/log_level.h"
+#include "log_viewer/core/text.h"
 
 #include <ctype.h>
 #include <string.h>

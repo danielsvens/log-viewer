@@ -1,11 +1,11 @@
-#include "log_viewer/options.h"
+#include "log_viewer/app/options.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static constexpr unsigned char USAGE_TEXT[] = {
-#embed "../resources/usage.txt" suffix(, 0) if_empty(0)
+#embed "../../resources/usage.txt" suffix(, 0) if_empty(0)
 };
 
 typedef enum {

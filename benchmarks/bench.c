@@ -1,4 +1,4 @@
-#include "log_viewer/search.h"
+#include "log_viewer/core/search.h"
 
 #include <stdio.h>
 #include <stdlib.h>
