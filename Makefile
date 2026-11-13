@@ -49,7 +49,7 @@ INPUT_TEST_OBJ := $(OBJDIR)/tests/input_test.o
 DEPS := $(OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(INPUT_TEST_OBJ:.o=.d) $(OBJDIR)/tests/kube_test.d
 
 # Preserve the bundled third-party JSON header's upstream formatting.
-FORMAT_FILES := $(sort $(SRC) $(filter-out include/json.h,$(shell find include src -type f -name '*.h')) $(shell find tests benchmarks -type f -name '*.c'))
+FORMAT_FILES := $(sort $(wildcard src/gui/*.c) $(SRC) $(filter-out include/json.h,$(shell find include src -type f -name '*.h')) $(shell find tests benchmarks -type f -name '*.c'))
 
 # ===== Targets =====
 .DEFAULT_GOAL := all
@@ -167,3 +167,9 @@ help:
 	@echo "make clean                     # remove builds and compilation database"
 
 -include $(DEPS)
+
+# Optional native frontend; normal TUI builds never fetch or link Raven.
+.PHONY: gui
+gui:
+	cmake -S src/gui -B build/gui -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$(CC) $(GUI_CMAKE_ARGS)
+	cmake --build build/gui --parallel 4
