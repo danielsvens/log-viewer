@@ -10,6 +10,11 @@
 #include <limits.h>
 #include <unistd.h>
 
+constexpr size_t GUI_CACHE_ROWS = 512;
+constexpr size_t GUI_PREVIEW_BYTES = 4096;
+constexpr size_t GUI_ROW_BYTES = GUI_PREVIEW_BYTES + 1;
+constexpr size_t GUI_PREFETCH_ROWS = 20;
+
 /* The UI owns widgets; this mutex protects only the worker mailbox and copied rows. */
 typedef struct {
   pthread_mutex_t mutex;
@@ -20,10 +25,11 @@ typedef struct {
   char *detail_text;
   Rid detail, detail_panel;
   bool details_visible;
-  size_t start, loaded, count;
+  size_t requested_start;
+  size_t cached_start, cached_count;
   unsigned generation;
   char expression[QUERY_CAPACITY], error[160];
-  char rows[512][4097];
+  char rows[GUI_CACHE_ROWS][GUI_ROW_BYTES];
   SearchStatus status;
   Rid table, status_label, input;
 } Gui;
@@ -60,7 +66,7 @@ static void *reader(void *context) {
   RecordReader reader = { 0 };
   TextBuffer buffer = { 0 };
 
-  char (*rows)[4097] = calloc(512, 4097);
+  char (*rows)[GUI_ROW_BYTES] = calloc(GUI_CACHE_ROWS, GUI_ROW_BYTES);
 
   if (!rows) return nullptr;
 
@@ -70,7 +76,7 @@ static void *reader(void *context) {
     bool detail_requested = gui->detail_requested;
     size_t detail_index = gui->detail_index;
 
-    size_t start = gui->start;
+    size_t start = gui->requested_start;
     unsigned generation = gui->generation;
 
     char expression[QUERY_CAPACITY];
@@ -94,22 +100,22 @@ static void *reader(void *context) {
     SearchStatus status = search_status(gui->search);
     size_t count = 0;
 
-    for (; count < 512 && start + count < status.matches; count++) {
+    for (; count < GUI_CACHE_ROWS && start + count < status.matches; count++) {
       LogRecord record;
-      int result = search_read_result(gui->search, start + count, &reader, &buffer, &record, 4096);
+      int result = search_read_result(gui->search, start + count, &reader, &buffer, &record, GUI_PREVIEW_BYTES);
 
       if (result != 1) break;
 
-      snprintf(rows[count], 4097, "%s", record.text);
+      snprintf(rows[count], sizeof(rows[count]), "%s", record.text);
     }
 
     SearchStatus after = search_status(gui->search);
 
     pthread_mutex_lock(&gui->mutex);
     if (generation == gui->generation && status.revision == after.revision && status.history_epoch == after.history_epoch) {
-      gui->loaded = start;
-      gui->count = count;
-      memcpy(gui->rows, rows, count * 4097);
+      gui->cached_start = start;
+      gui->cached_count = count;
+      memcpy(gui->rows, rows, count * sizeof(rows[0]));
       gui->status = status;
     }
     pthread_mutex_unlock(&gui->mutex);
@@ -129,34 +135,48 @@ static const char *cell(Rid table, int row, int column, void *context) {
   (void)table;
   (void)column;
 
+  if (row < 0) return "";
+
   Gui *gui = context;
-  static char text[4097];
+  size_t row_index = (size_t)row;
+  static char text[GUI_ROW_BYTES];
 
   pthread_mutex_lock(&gui->mutex);
-  if ((size_t)row >= gui->loaded && (size_t)row - gui->loaded < gui->count) {
-    memcpy(text, gui->rows[(size_t)row - gui->loaded], sizeof(text));
-  } else {
-    strcpy(text, "Loading…");
 
-    if ((size_t)row < gui->start || (size_t)row >= gui->start + 512) {
-      gui->start = row > 20 ? (size_t)row - 20 : 0;
-      gui->generation++;
-    }
+  bool row_is_cached = row_index >= gui->cached_start && row_index - gui->cached_start < gui->cached_count;
+
+  if (row_is_cached) {
+    size_t cache_index = row_index - gui->cached_start;
+    memcpy(text, gui->rows[cache_index], sizeof(text));
+
+    pthread_mutex_unlock(&gui->mutex);
+
+    return text;
   }
+
+  bool row_is_requested = row_index >= gui->requested_start && row_index - gui->requested_start < GUI_CACHE_ROWS;
+
+  if (!row_is_requested) {
+    size_t prefetch = row_index < GUI_PREFETCH_ROWS ? row_index : GUI_PREFETCH_ROWS;
+    gui->requested_start = row_index - prefetch;
+    gui->generation++;
+  }
+
   pthread_mutex_unlock(&gui->mutex);
 
-  return text;
+  return "Loading…";
 }
 
 static void filter(Rid widget, const char *text, void *context) {
   (void)widget;
 
   Gui *gui = context;
+
   pthread_mutex_lock(&gui->mutex);
   snprintf(gui->expression, sizeof(gui->expression), "%s", text);
   gui->configure = true;
   gui->generation++;
-  gui->count = 0;
+  gui->cached_count = 0;
   pthread_mutex_unlock(&gui->mutex);
 }
 
@@ -165,6 +185,7 @@ static void follow(Rid widget, void *context) {
 
   Gui *gui = context;
   gui->follow = !gui->follow;
+
   Rbutton_set_text(widget, gui->follow ? "Follow: on" : "Follow: off");
 }
 
@@ -172,10 +193,12 @@ static void pause_updates(Rid widget, void *context) {
   (void)widget;
 
   Gui *gui = context;
+
   pthread_mutex_lock(&gui->mutex);
   gui->paused = !gui->paused;
   bool paused = gui->paused;
   pthread_mutex_unlock(&gui->mutex);
+
   Rbutton_set_text(widget, paused ? "Resume viewport" : "Pause viewport");
 }
 
@@ -183,6 +206,7 @@ static void details(Rid widget, int row, void *context) {
   (void)widget;
 
   Gui *gui = context;
+
   pthread_mutex_lock(&gui->mutex);
   gui->detail_index = (size_t)row;
   gui->detail_requested = true;
@@ -343,7 +367,9 @@ static void refresh_workspace(Gui *gui) {
 
   int count = status.matches > INT_MAX ? INT_MAX : (int)status.matches;
   Rtable_set_virtual_rows(gui->table, count, cell, gui);
-  if (gui->follow && count) Rtable_scroll_to_row(gui->table, count - 1);
+  if (gui->follow && count) {
+    Rtable_scroll_to_row(gui->table, count - 1);
+  }
 }
 
 int main(int argc, char **argv) {
