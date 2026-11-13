@@ -15,6 +15,7 @@ typedef struct {
   /* Records reused on the current search; cache_bytes includes any visible preview. */
   size_t reused, cache_bytes;
   uint64_t revision;
+  uint64_t history_epoch;
   bool searching, eof, cached;
   int error;
   bool connector_failed;

@@ -709,6 +709,7 @@ static SearchStatus status_locked(Search *search) {
                          .scanned = current ? search->scanned : 0,
                          .unavailable = search->store.unavailable,
                          .revision = search->published,
+                         .history_epoch = search->history_epoch,
                          .eof = search->sources.eof,
                          .searching = !current || search->scanned < search->store.count || search->sources.loading,
                          .error = search->error };
