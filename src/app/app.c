@@ -1,10 +1,11 @@
-#include "log_viewer/app.h"
-#include "log_viewer/query.h"
-#include "log_viewer/search.h"
-#include "log_viewer/tui.h"
+#include "log_viewer/app/app.h"
+#include "log_viewer/core/query.h"
+#include "log_viewer/core/search.h"
+#include "log_viewer/tui/tui.h"
 
 #include <errno.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -65,31 +66,6 @@ static int run_dump(Search *search) {
   return interrupted ? 130 : result;
 }
 
-static int run_tui(Search *search, Query *query, Tui *tui) {
-  LogView view = { .follow = true };
-
-  while (!interrupted && tui->running) {
-    SearchStatus status = search_status(search);
-
-    if (status.error) {
-      errno = status.error;
-      return 1;
-    }
-
-    search_sync_view(search, &view);
-    tui_render(tui, search, &view, query, status.eof);
-
-    if (tui->io_error) {
-      errno = tui->io_error;
-      return 1;
-    }
-
-    if (!tui_handle_key(tui, search, &view, query, getch())) return 1;
-  }
-
-  return interrupted ? 130 : 0;
-}
-
 int app_run(const Options *options) {
   Query query = { 0 };
 
@@ -100,7 +76,6 @@ int app_run(const Options *options) {
   }
 
   Search *search = nullptr;
-  Tui tui = { 0 };
   SourceOpenResult opened = search_open_inputs(&search, options->inputs, options->input_count, options->docker_tail, options->filter, !options->dump);
 
   if (opened != SOURCE_OPENED) {
@@ -113,23 +88,17 @@ int app_run(const Options *options) {
 
   search_set_levels(search, options->levels);
 
-  int result = 0;
+  interrupted = 0;
 
-  if (!options->dump && !tui_open(&tui)) result = 1;
-  else {
-    interrupted = 0;
+  void (*previous_interrupt)(int) = signal(SIGINT, handle_signal);
+  void (*previous_terminate)(int) = signal(SIGTERM, handle_signal);
 
-    void (*previous_interrupt)(int) = signal(SIGINT, handle_signal);
-    void (*previous_terminate)(int) = signal(SIGTERM, handle_signal);
+  int result = options->dump ? run_dump(search) : tui_run(search, &query, &interrupted);
 
-    result = options->dump ? run_dump(search) : run_tui(search, &query, &tui);
-
-    signal(SIGINT, previous_interrupt);
-    signal(SIGTERM, previous_terminate);
-  }
+  signal(SIGINT, previous_interrupt);
+  signal(SIGTERM, previous_terminate);
 
   int error = errno;
-  tui_close(&tui);
   search_close(search);
   query_destroy(&query);
 

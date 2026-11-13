@@ -1,5 +1,5 @@
-#include "log_viewer/app.h"
-#include "log_viewer/options.h"
+#include "log_viewer/app/app.h"
+#include "log_viewer/app/options.h"
 
 #include <locale.h>
 #include <stdio.h>

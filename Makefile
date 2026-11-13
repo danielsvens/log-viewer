@@ -36,9 +36,11 @@ else
 endif
 
 # ===== Sources / Objects =====
-SRC  := $(sort $(shell find src -type f -name '*.c'))
+CORE_SRC := $(sort $(wildcard src/core/*.c))
+TUI_SRC := $(sort $(wildcard src/tui/*.c))
+APP_SRC := src/main.c $(sort $(wildcard src/app/*.c))
+SRC := $(CORE_SRC) $(TUI_SRC) $(APP_SRC)
 OBJ  := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
-CORE_SRC := src/process.c src/kube.c src/log_level.c src/json_support.c src/log_store.c src/query.c src/search.c src/source.c src/source_set.c src/source_tree.c src/text.c
 CORE_OBJ := $(patsubst src/%.c,$(OBJDIR)/%.o,$(CORE_SRC))
 TEST_OBJ := $(OBJDIR)/tests/core_test.o
 TEST_BIN := $(OBJDIR)/core-test
@@ -47,7 +49,7 @@ INPUT_TEST_OBJ := $(OBJDIR)/tests/input_test.o
 DEPS := $(OBJ:.o=.d) $(TEST_OBJ:.o=.d) $(INPUT_TEST_OBJ:.o=.d) $(OBJDIR)/tests/kube_test.d
 
 # Preserve the bundled third-party JSON header's upstream formatting.
-FORMAT_FILES := $(sort $(SRC) $(filter-out include/json.h,$(shell find include -type f -name '*.h')) $(shell find tests benchmarks -type f -name '*.c'))
+FORMAT_FILES := $(sort $(SRC) $(filter-out include/json.h,$(shell find include src -type f -name '*.h')) $(shell find tests benchmarks -type f -name '*.c'))
 
 # ===== Targets =====
 .DEFAULT_GOAL := all
@@ -75,7 +77,7 @@ $(OBJDIR)/tests/%.o: tests/%.c
 $(TEST_BIN): $(CORE_OBJ) $(TEST_OBJ)
 	$(CC) $(LDFLAGS) $^ -o $@ -pthread
 
-$(INPUT_TEST_BIN): $(CORE_OBJ) $(OBJDIR)/tui_input.o $(INPUT_TEST_OBJ)
+$(INPUT_TEST_BIN): $(CORE_OBJ) $(OBJDIR)/tui/tui_input.o $(INPUT_TEST_OBJ)
 	$(CC) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 $(OBJDIR)/bench: benchmarks/bench.c $(CORE_OBJ)
@@ -105,7 +107,7 @@ sanitize:
 	@mkdir -p build/sanitize
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined $(SRC) -o build/sanitize/log-viewer $(LDFLAGS) $(LDLIBS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/core_test.c $(CORE_SRC) -o build/sanitize/core-test $(LDFLAGS) -pthread
-	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/input_test.c src/tui_input.c $(CORE_SRC) -o build/sanitize/input-test $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/input_test.c src/tui/tui_input.c $(CORE_SRC) -o build/sanitize/input-test $(LDFLAGS) $(LDLIBS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O1 -fsanitize=address,undefined tests/kube_test.c $(CORE_SRC) -o build/sanitize/kube-test $(LDFLAGS) -pthread
 	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/core-test
 	ASAN_OPTIONS="$(ASAN_OPTIONS)" UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/input-test
@@ -122,7 +124,7 @@ memcheck:
 	@mkdir -p build/memcheck
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/core_test.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/core-test $(LDFLAGS) -pthread
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin $(SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/log-viewer $(LDFLAGS) $(LDLIBS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/input_test.c src/tui_input.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/input-test $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/input_test.c src/tui/tui_input.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/input-test $(LDFLAGS) $(LDLIBS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-builtin tests/kube_test.c $(CORE_SRC) tests/allocation_tracker.c $(WRAP_ALLOC) -o build/memcheck/kube-test $(LDFLAGS) -pthread
 	./build/memcheck/core-test
 	./build/memcheck/input-test

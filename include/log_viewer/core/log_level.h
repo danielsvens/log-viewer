@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stddef.h>
-#include "log_viewer/json_support.h"
+#include "log_viewer/core/json_support.h"
 
 typedef enum { LOG_LEVEL_ERROR, LOG_LEVEL_WARN, LOG_LEVEL_INFO, LOG_LEVEL_DEBUG, LOG_LEVEL_UNKNOWN, LOG_LEVEL_COUNT } LogLevel;
 

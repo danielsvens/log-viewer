@@ -1,6 +1,6 @@
 #pragma once
 
-#include "log_viewer/source.h"
+#include "log_viewer/core/source.h"
 #include <time.h>
 
 typedef struct {

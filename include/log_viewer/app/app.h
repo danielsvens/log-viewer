@@ -1,5 +1,5 @@
 #pragma once
 
-#include "log_viewer/options.h"
+#include "log_viewer/app/options.h"
 
 int app_run(const Options *options);

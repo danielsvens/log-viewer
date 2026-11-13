@@ -1,7 +1,7 @@
 #pragma once
 
-#include "log_viewer/log_level.h"
-#include "log_viewer/source.h"
+#include "log_viewer/core/log_level.h"
+#include "log_viewer/core/source.h"
 
 typedef struct {
   InputSpec *inputs;

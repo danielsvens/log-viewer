@@ -1,6 +1,6 @@
 #pragma once
 
-#include "log_viewer/search.h"
+#include "log_viewer/core/search.h"
 
 typedef struct {
   const char *name;

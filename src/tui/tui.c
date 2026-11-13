@@ -1,4 +1,5 @@
-#include "log_viewer/tui.h"
+#include "log_viewer/tui/tui.h"
+#include "tui_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -81,4 +82,40 @@ void tui_close(Tui *tui) {
   json_workspace_destroy(&tui->level_json);
 
   *tui = (Tui){ 0 };
+}
+
+static int run_loop(Search *search, Query *query, Tui *tui, const volatile sig_atomic_t *interrupted) {
+  LogView view = { .follow = true };
+
+  while (!*interrupted && tui->running) {
+    SearchStatus status = search_status(search);
+
+    if (status.error) {
+      errno = status.error;
+      return 1;
+    }
+
+    search_sync_view(search, &view);
+    tui_render(tui, search, &view, query, status.eof);
+
+    if (tui->io_error) {
+      errno = tui->io_error;
+      return 1;
+    }
+
+    if (!tui_handle_key(tui, search, &view, query, getch())) return 1;
+  }
+
+  return *interrupted ? 130 : 0;
+}
+
+int tui_run(Search *search, Query *query, const volatile sig_atomic_t *interrupted) {
+  Tui tui = { 0 };
+  int result = tui_open(&tui) ? run_loop(search, query, &tui, interrupted) : 1;
+
+  int error = errno;
+  tui_close(&tui);
+  errno = error;
+
+  return result;
 }

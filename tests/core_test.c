@@ -1,11 +1,11 @@
-#include "log_viewer/json_support.h"
-#include "log_viewer/log_store.h"
-#include "log_viewer/query.h"
-#include "log_viewer/log_level.h"
-#include "log_viewer/source.h"
-#include "log_viewer/search.h"
-#include "log_viewer/source_tree.h"
-#include "log_viewer/text.h"
+#include "log_viewer/core/json_support.h"
+#include "log_viewer/core/log_store.h"
+#include "log_viewer/core/query.h"
+#include "log_viewer/core/log_level.h"
+#include "log_viewer/core/source.h"
+#include "log_viewer/core/search.h"
+#include "log_viewer/core/source_tree.h"
+#include "log_viewer/core/text.h"
 
 #include <assert.h>
 #include <errno.h>

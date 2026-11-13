@@ -297,3 +297,28 @@ or `make test` to also cover dynamic group selection and search caches. An opt-i
 live test is available via `python3 tests/kube_smoke.py` with `KUBE_SMOKE=1`,
 `KUBE_SMOKE_NAMESPACE`, and `KUBE_SMOKE_IMAGE` set (`KUBE_SMOKE_CONTEXT` is optional).
 It creates and removes a disposable deployment in the selected test namespace.
+
+## Source architecture
+
+The source folders define module boundaries within the existing C executable:
+
+- `src/core/`: shared log storage, sources and connectors, queries, search, source
+  trees, and text/JSON helpers. Public headers live in `include/log_viewer/core/`.
+  Core has no dependency on application code, frontend code, or ncurses and can
+  be linked on its own, as the core tests and benchmark already do.
+- `src/tui/`: terminal lifecycle, event loop, input handling, and rendering. Its
+  public entry point is `include/log_viewer/tui/tui.h`; ncurses types and mutable
+  terminal state stay in `src/tui/tui_internal.h`.
+- `src/app/` and `src/main.c`: command-line parsing, source/search setup, signal
+  handling, headless dump output, and frontend dispatch. Application headers live
+  in `include/log_viewer/app/`.
+- `src/gui/`: reserved for a future GUI frontend that consumes core directly.
+
+Dependencies flow from the application to a frontend and core, and from each
+frontend to core. Core must not include frontend or application headers. Frontends
+must not depend on each other. The application owns the search session and signal
+handlers; the TUI borrows that session and observes the application's cancellation
+flag while owning its own terminal lifecycle.
+
+The Makefile lists each module's sources separately so future GUI sources are not
+implicitly compiled or linked into the terminal executable.

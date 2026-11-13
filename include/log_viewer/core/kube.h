@@ -1,6 +1,6 @@
 #pragma once
-#include "log_viewer/source_set.h"
-#include "log_viewer/process.h"
+#include "log_viewer/core/source_set.h"
+#include "log_viewer/core/process.h"
 
 typedef struct KubeTarget KubeTarget;
 bool kube_add_target(SourceSet *set, const InputSpec *input);

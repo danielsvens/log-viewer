@@ -1,5 +1,5 @@
-#include "log_viewer/tui.h"
-#include "log_viewer/json_support.h"
+#include "tui_internal.h"
+#include "log_viewer/core/json_support.h"
 
 #include <errno.h>
 #include <fcntl.h>

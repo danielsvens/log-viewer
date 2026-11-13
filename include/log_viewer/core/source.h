@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include "log_viewer/log_store.h"
+#include "log_viewer/core/log_store.h"
 
 constexpr size_t SOURCE_GROUP_BASE = SIZE_MAX / 2;
 constexpr size_t SOURCE_READ_BYTES = 1024 * 1024;

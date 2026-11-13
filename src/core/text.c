@@ -1,4 +1,4 @@
-#include "log_viewer/text.h"
+#include "log_viewer/core/text.h"
 
 #include <ctype.h>
 #include <errno.h>

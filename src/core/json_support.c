@@ -1,5 +1,5 @@
-#include "log_viewer/json_support.h"
-#include "log_viewer/text.h"
+#include "log_viewer/core/json_support.h"
+#include "log_viewer/core/text.h"
 
 #include <errno.h>
 #include <stdlib.h>

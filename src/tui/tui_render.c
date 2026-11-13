@@ -1,5 +1,5 @@
-#include "log_viewer/tui.h"
-#include "log_viewer/text.h"
+#include "tui_internal.h"
+#include "log_viewer/core/text.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -9,11 +9,11 @@
 #include <wchar.h>
 
 static constexpr unsigned char HELP_TEXT[] = {
-#embed "../resources/help.txt" suffix(, 0) if_empty(0)
+#embed "../../resources/help.txt" suffix(, 0) if_empty(0)
 };
 
 static constexpr unsigned char KEY_HINT_TEXT[] = {
-#embed "../resources/key-hints.txt" suffix(, 0) if_empty(0)
+#embed "../../resources/key-hints.txt" suffix(, 0) if_empty(0)
 };
 
 typedef struct {

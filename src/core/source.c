@@ -1,5 +1,5 @@
-#include "log_viewer/source.h"
-#include "log_viewer/kube.h"
+#include "log_viewer/core/source.h"
+#include "log_viewer/core/kube.h"
 
 #include <errno.h>
 #include <fcntl.h>

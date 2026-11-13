@@ -1,7 +1,7 @@
-#include "log_viewer/search.h"
-#include "log_viewer/query.h"
-#include "log_viewer/source_set.h"
-#include "log_viewer/kube.h"
+#include "log_viewer/core/search.h"
+#include "log_viewer/core/query.h"
+#include "log_viewer/core/source_set.h"
+#include "log_viewer/core/kube.h"
 
 #include <errno.h>
 #include <pthread.h>
